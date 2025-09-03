@@ -96,6 +96,16 @@ class Objective(StrictModel):
             "The weight assigned to the accumulated fixed costs of each vehicle used in solution"  # noqa
         ),
     )
+    soft_time_window_penalty: Optional[float] = Field(
+        default=None,
+        examples=[1.0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to minimizing penalties from soft time window violations. "
+            "Only applies when soft time windows are configured via task_time_window_types and task_time_window_penalties."
+        ),
+    )
 
 
 class VehicleBreak(StrictModel):
@@ -583,6 +593,30 @@ class TaskData(StrictModel):
         description=(
             "A list of order vehicle match, where the match would contain "
             "a order id and a list of vehicle ids that can serve this order."
+        ),
+    )
+    task_time_window_types: Optional[List[str]] = Field(
+        default=None,
+        examples=[["strict", "soft", "strict", "soft"]],
+        description=(
+            "dtype: string, values: 'strict' or 'soft'."
+            " \n\n "
+            "List specifying the type of time window for each task. "
+            "'strict' means the time window must be respected exactly, "
+            "'soft' means violations are allowed but penalized. "
+            "Must have the same length as task_locations if provided."
+        ),
+    )
+    task_time_window_penalties: Optional[List[float]] = Field(
+        default=None,
+        examples=[[0.0, 100.0, 0.0, 50.0]],
+        description=(
+            "dtype: float32, penalty >= 0."
+            " \n\n "
+            "List of penalty rates for soft time window violations. "
+            "Each penalty represents the cost per unit time of violation (early or late). "
+            "Only used when task_time_window_types contains 'soft' values. "
+            "Must have the same length as task_locations if provided."
         ),
     )
 

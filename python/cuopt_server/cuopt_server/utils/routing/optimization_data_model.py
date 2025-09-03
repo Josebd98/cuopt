@@ -59,6 +59,9 @@ def get_objectives_as_lists(objectives):
     if objectives.vehicle_fixed_cost is not None:
         cuopt_objectives.append(routing.Objective.VEHICLE_FIXED_COST)
         objective_weights.append(objectives.vehicle_fixed_cost)
+    if objectives.soft_time_window_penalty is not None:
+        cuopt_objectives.append(routing.Objective.SOFT_TIME_WINDOW_PENALTY)
+        objective_weights.append(objectives.soft_time_window_penalty)
 
     return cuopt_objectives, objective_weights
 
@@ -70,6 +73,7 @@ objective_names = {
     routing.Objective.VARIANCE_ROUTE_SERVICE_TIME: "variance_route_service_time",  # noqa
     routing.Objective.PRIZE: "prize",
     routing.Objective.VEHICLE_FIXED_COST: "vehicle_fixed_cost",
+    routing.Objective.SOFT_TIME_WINDOW_PENALTY: "soft_time_window_penalty",
 }
 
 
@@ -808,6 +812,8 @@ class OptimizationDataModel:
         task_service_times,
         prizes,
         order_vehicle_match,
+        task_time_window_types=None,
+        task_time_window_penalties=None,
     ):
         if not self.is_route_detail_set:
             return (
@@ -838,6 +844,8 @@ class OptimizationDataModel:
             task_service_times,
             prizes,
             order_vehicle_match,
+            task_time_window_types=task_time_window_types,
+            task_time_window_penalties=task_time_window_penalties,
             updating=False,
             comparison_locations=None,
         )
@@ -894,6 +902,8 @@ class OptimizationDataModel:
         task_service_times,
         prizes,
         order_vehicle_match,
+        task_time_window_types=None,
+        task_time_window_penalties=None,
     ):
         if not self.is_route_detail_set:
             return (
@@ -927,6 +937,8 @@ class OptimizationDataModel:
             task_service_times,
             prizes,
             order_vehicle_match,
+            task_time_window_types=task_time_window_types,
+            task_time_window_penalties=task_time_window_penalties,
             updating=True,
             comparison_locations=self.task_data["task_locations"],
         )

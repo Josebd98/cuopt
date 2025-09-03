@@ -403,6 +403,34 @@ void data_model_view_t<i_t, f_t>::set_order_time_windows(i_t const* earliest,
 }
 
 template <typename i_t, typename f_t>
+void data_model_view_t<i_t, f_t>::set_soft_time_windows(uint8_t const* time_window_types,
+                                                         f_t const* penalties,
+                                                         bool validate_input)
+{
+  cuopt_expects(time_window_types != nullptr && penalties != nullptr,
+                error_type_t::ValidationError,
+                "Soft time window parameters cannot be null");
+  
+  if (validate_input) {
+    // Validate that time_window_types contains only 0s and 1s
+    cuopt_expects(
+      detail::check_min_max_values(
+        time_window_types, num_orders_, (uint8_t)0, (uint8_t)1, handle_ptr_->get_stream()),
+      error_type_t::ValidationError,
+      "Time window types must be 0 (strict) or 1 (soft)!");
+    
+    // Validate that penalties are non-negative
+    cuopt_expects(
+      detail::check_min_max_values(
+        penalties, num_orders_, f_t(0.0), std::numeric_limits<f_t>::max(), handle_ptr_->get_stream()),
+      error_type_t::ValidationError,
+      "Penalties must be non-negative!");
+  }
+  
+  soft_tw_ = std::move(detail::soft_time_window_t<i_t, f_t>(time_window_types, penalties));
+}
+
+template <typename i_t, typename f_t>
 void data_model_view_t<i_t, f_t>::set_order_prizes(f_t const* prizes, bool validate_input)
 {
   order_prizes_ = raft::device_span<f_t const>(prizes, num_orders_);
@@ -683,6 +711,12 @@ std::tuple<i_t const*, i_t const*> data_model_view_t<i_t, f_t>::get_order_time_w
   const noexcept
 {
   return std::make_tuple(order_tw_.get_earliest_time(), order_tw_.get_latest_time());
+}
+
+template <typename i_t, typename f_t>
+detail::soft_time_window_t<i_t, f_t> data_model_view_t<i_t, f_t>::get_soft_time_windows() const noexcept
+{
+  return soft_tw_;
 }
 
 template <typename i_t, typename f_t>

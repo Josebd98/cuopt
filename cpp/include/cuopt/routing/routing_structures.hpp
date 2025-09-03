@@ -37,6 +37,7 @@ enum class objective_t {
   VARIANCE_ROUTE_SERVICE_TIME,  // Variance in route service times
   PRIZE,                        // Sum of prizes of all orders that are served
   VEHICLE_FIXED_COST,           // Used when fixed vehicle cost are enabled
+  SOFT_TIME_WINDOW_PENALTY,     // Penalty for violating soft time window constraints
   SIZE  // Helper enum to keep track of number of supported objective functions
 };
 
@@ -128,6 +129,35 @@ class order_time_window_t {
  private:
   i_t const* earliest_{nullptr};
   i_t const* latest_{nullptr};
+};
+
+// Soft time window constraints structure
+template <typename i_t, typename f_t>
+class soft_time_window_t {
+ public:
+  soft_time_window_t(uint8_t const* time_window_types, f_t const* penalties)
+    : time_window_types_(time_window_types), penalties_(penalties)
+  {
+  }
+
+  soft_time_window_t() = default;
+
+  uint8_t const* get_time_window_types() const { return time_window_types_; }
+  f_t const* get_penalties() const { return penalties_; }
+
+  // Check if a specific order has a soft time window (1 = soft, 0 = strict)
+  __device__ inline bool is_soft_time_window(i_t order_idx) const {
+    return time_window_types_ != nullptr && time_window_types_[order_idx] == 1;
+  }
+
+  // Get penalty rate for a specific order
+  __device__ inline f_t get_penalty_rate(i_t order_idx) const {
+    return penalties_ != nullptr ? penalties_[order_idx] : f_t(0.0);
+  }
+
+ private:
+  uint8_t const* time_window_types_{nullptr};  // 0 = strict, 1 = soft
+  f_t const* penalties_{nullptr};               // penalty per unit violation
 };
 
 }  // namespace detail

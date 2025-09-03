@@ -244,6 +244,8 @@ def populate_optimization_data(
                 task_data.service_times,
                 task_data.prizes,
                 task_data.order_vehicle_match,
+                task_data.task_time_window_types,
+                task_data.task_time_window_penalties,
             )
         )
 

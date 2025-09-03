@@ -42,4 +42,5 @@ ConfigureTest(ROUTING_UNIT_TEST
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/prize_collection.cu
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/objective_function.cu
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/top_k.cu
+      ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/soft_time_windows_test.cu
 )

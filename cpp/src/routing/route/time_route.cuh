@@ -230,6 +230,46 @@ class time_route_t {
           inf_cost[dim_t::TIME] += max(0., total_time - (double)vehicle_info.max_time);
         }
       }
+
+      // Calculate soft time window penalties and adjust infeasibility cost
+      // Note: For soft time windows, we need to calculate penalties based on
+      // the unconstrained arrival time. Since departure_forward is adjusted
+      // to respect time windows, we use excess_forward to reconstruct the
+      // original arrival time for penalty calculation.
+      if (dim_info.has_soft_time_windows() && soft_tw_types.data() != nullptr) {
+        double total_soft_penalty = 0.0;
+        double soft_excess_to_subtract = 0.0;
+        
+        for (i_t i = 0; i < n_nodes_route; ++i) {
+          // Check if this node has a soft time window
+          if (soft_tw_types[i] == 1) { // 1 = soft time window
+            double earliest_time = window_start[i];
+            double latest_time = window_end[i];
+            f_t penalty_rate = soft_tw_penalties[i];
+            
+            // Reconstruct the unconstrained arrival time
+            // departure_forward is clamped to [earliest, latest] for strict windows
+            // excess_forward contains the amount of late violation for strict windows
+            double unconstrained_arrival = departure_forward[i] + excess_forward[i];
+            
+            // For soft windows, we want to penalize based on the unconstrained time
+            double early_violation = max(0.0, earliest_time - unconstrained_arrival);
+            double late_violation = max(0.0, unconstrained_arrival - latest_time);
+            
+            total_soft_penalty += (early_violation + late_violation) * penalty_rate;
+            
+            // Subtract soft time window violations from infeasibility cost
+            // since they should not make the solution infeasible
+            soft_excess_to_subtract += late_violation; // Only late violations contribute to excess_forward
+          }
+        }
+        
+        obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = total_soft_penalty;
+        
+        // Remove soft time window violations from infeasibility cost
+        // This ensures that soft time window violations don't make the solution infeasible
+        inf_cost[dim_t::TIME] = max(0.0, inf_cost[dim_t::TIME] - soft_excess_to_subtract);
+      }
     }
 
     static DI thrust::tuple<view_t, i_t*> create_shared_route(i_t* shmem,
@@ -273,6 +313,9 @@ class time_route_t {
     raft::device_span<double> earliest_arrival_backward;
     raft::device_span<double> unavoidable_wait_backward;
     raft::device_span<double> actual_arrival;
+    // Soft time window support
+    raft::device_span<uint8_t const> soft_tw_types;
+    raft::device_span<f_t const> soft_tw_penalties;
   };
 
   view_t view()

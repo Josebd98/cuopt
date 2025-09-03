@@ -130,7 +130,8 @@ class Objective(IntEnum):
 
     PRIZE               - Models with respect to prizes collected by the
                           serviced orders
-    VEHICLE_FIXED_COST                - Models cost per vehicle. Enabled when set_vehicle_fixed_costs is used.
+    VEHICLE_FIXED_COST  - Models cost per vehicle. Enabled when set_vehicle_fixed_costs is used.
+    SOFT_TIME_WINDOW_PENALTY - Models penalties from soft time window violations.
     """
 
     COST = objective_t.COST
@@ -139,6 +140,7 @@ class Objective(IntEnum):
     VARIANCE_ROUTE_SERVICE_TIME = objective_t.VARIANCE_ROUTE_SERVICE_TIME
     PRIZE = objective_t.PRIZE
     VEHICLE_FIXED_COST = objective_t.VEHICLE_FIXED_COST
+    SOFT_TIME_WINDOW_PENALTY = objective_t.SOFT_TIME_WINDOW_PENALTY
 
 
 class NodeType(IntEnum):
@@ -185,6 +187,8 @@ cdef class DataModel:
         self.order_locations = cudf.Series()
         self.order_earliest = cudf.Series()
         self.order_latest = cudf.Series()
+        self.soft_tw_types = cudf.Series()
+        self.soft_tw_penalties = cudf.Series()
         self.order_prizes = cudf.Series()
         self.pickup_indices = cudf.Series()
         self.delivery_indices = cudf.Series()
@@ -523,6 +527,22 @@ cdef class DataModel:
         self.c_data_model_view.get().set_order_time_windows(
             <int*>c_earliest,
             <int*>c_latest
+        )
+
+    def set_soft_time_windows(self, time_window_types, penalties):
+        self.soft_tw_types = type_cast(time_window_types, np.uint8, "time_window_types")
+        self.soft_tw_penalties = type_cast(penalties, np.float32, "penalties")
+
+        cdef uintptr_t c_types = (
+            self.soft_tw_types.__cuda_array_interface__['data'][0]
+        )
+        cdef uintptr_t c_penalties = (
+            self.soft_tw_penalties.__cuda_array_interface__['data'][0]
+        )
+
+        self.c_data_model_view.get().set_soft_time_windows(
+            <const unsigned char*>c_types,
+            <const float*>c_penalties
         )
 
     def set_order_prizes(self, prizes):

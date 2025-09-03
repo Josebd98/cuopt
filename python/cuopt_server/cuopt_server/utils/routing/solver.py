@@ -318,6 +318,34 @@ def create_data_model(
         data_model.set_order_time_windows(
             t_time_windows["earliest"], t_time_windows["latest"]
         )
+        
+        # Handle soft time windows if provided
+        t_time_window_types = optimization_data.task_data.get("task_time_window_types")
+        t_time_window_penalties = optimization_data.task_data.get("task_time_window_penalties")
+        
+        if t_time_window_types is not None:
+            # Convert string types to numeric (0 = strict, 1 = soft)
+            numeric_types = []
+            for tw_type in t_time_window_types:
+                if tw_type == "strict":
+                    numeric_types.append(0)
+                elif tw_type == "soft":
+                    numeric_types.append(1)
+                else:
+                    raise ValueError(f"Invalid time window type: {tw_type}. Must be 'strict' or 'soft'")
+            
+            # If penalties not provided, use default values
+            if t_time_window_penalties is None:
+                # Default penalty of 100.0 for soft windows, 0.0 for strict
+                default_penalties = [100.0 if tw_type == "soft" else 0.0 
+                                   for tw_type in t_time_window_types]
+                t_time_window_penalties = default_penalties
+            
+            # Use the new C++ implementation for soft time windows
+            data_model.set_soft_time_windows(
+                cudf.Series(numeric_types, dtype='uint8'),
+                cudf.Series(t_time_window_penalties, dtype='float32')
+            )
 
     if optimization_data.task_data["service_times"] is not None:
         service_times = optimization_data.task_data["service_times"]

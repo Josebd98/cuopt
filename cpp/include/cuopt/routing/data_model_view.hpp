@@ -347,6 +347,23 @@ class data_model_view_t {
   void set_order_time_windows(i_t const* earliest, i_t const* latest, bool validate_input = true);
 
   /**
+   * @brief Set soft time window constraints for orders.
+   * This allows some orders to have their time windows violated with penalties
+   * instead of hard constraints.
+   *
+   * @param[in] time_window_types device memory pointer to uint8_t array where
+   * 0 = strict time window, 1 = soft time window. Array size should match number
+   * of orders. cuOpt does not own or copy this data.
+   * @param[in] penalties device memory pointer to penalty rates for soft time
+   * window violations. Only used for orders marked as soft. Array size should
+   * match number of orders. cuOpt does not own or copy this data.
+   * @param[in] validate_input runs expensive input checks. Defaults to true.
+   */
+  void set_soft_time_windows(uint8_t const* time_window_types, 
+                             f_t const* penalties, 
+                             bool validate_input = true);
+
+  /**
    * @brief Set the order prizes for prize collection
    *
    * @throws cuopt::logic_error when an error occurs
@@ -610,6 +627,12 @@ class data_model_view_t {
   raft::device_span<f_t const> get_vehicle_fixed_costs() const noexcept;
 
   /**
+   * @brief Get soft time window constraints information
+   * @return Soft time window constraints structure
+   */
+  detail::soft_time_window_t<i_t, f_t> get_soft_time_windows() const noexcept;
+
+  /**
    * @brief Get raft handle object containing GPU resource objects
    * @return Handle object
    */
@@ -633,6 +656,7 @@ class data_model_view_t {
   detail::vehicle_time_window_t<i_t, f_t> vehicle_tw_{};
   std::vector<detail::capacity_t<i_t, f_t>> caps_{};
   detail::order_time_window_t<i_t, f_t> order_tw_{};
+  detail::soft_time_window_t<i_t, f_t> soft_tw_{};
 
   raft::device_span<f_t const> order_prizes_;
 

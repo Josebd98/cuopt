@@ -392,6 +392,12 @@ template bool check_min_max_values<uint8_t, int>(const uint8_t* ptr,
                                                  const int max_value,
                                                  rmm::cuda_stream_view stream_view);
 
+template bool check_min_max_values<uint8_t, uint8_t>(const uint8_t* ptr,
+                                                     size_t size,
+                                                     const uint8_t min_value,
+                                                     const uint8_t max_value,
+                                                     rmm::cuda_stream_view stream_view);
+
 template bool check_min_max_values<int, int>(const int* ptr,
                                              size_t size,
                                              const int min_value,

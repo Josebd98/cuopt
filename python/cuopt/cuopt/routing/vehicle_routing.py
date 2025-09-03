@@ -771,6 +771,72 @@ class DataModel(vehicle_routing_wrapper.DataModel):
         super().set_order_time_windows(earliest, latest)
 
     @catch_cuopt_exception
+    def set_soft_time_windows(self, time_window_types, penalties):
+        """
+        Set soft time window constraints for orders.
+        
+        This allows some orders to have their time windows violated with penalties
+        instead of hard constraints. Orders marked as 'soft' can be visited outside
+        their time windows, but incur a penalty proportional to the violation.
+
+        Parameters
+        ----------
+        time_window_types : cudf.Series dtype - uint8 or List
+            Series or list where 0 = strict time window, 1 = soft time window.
+            Size must match the number of orders.
+        penalties : cudf.Series dtype - float32 or List  
+            Penalty rates for soft time window violations (per unit of time).
+            Only used for orders marked as soft (type = 1).
+            Size must match the number of orders.
+
+        Notes
+        -----
+        - Strict time windows (type = 0) must be respected exactly
+        - Soft time windows (type = 1) can be violated with penalties
+        - Penalties apply to both early arrivals and late arrivals
+        - Total penalty = (early_violation + late_violation) * penalty_rate
+
+        Examples
+        --------
+        >>> from cuopt import routing
+        >>> import cudf
+        >>> data_model = routing.DataModel(4, 2)
+        >>> 
+        >>> # Mixed strict and soft time windows
+        >>> types = [0, 1, 0, 1]  # strict, soft, strict, soft
+        >>> penalties = [0.0, 100.0, 0.0, 50.0]  # penalties for soft windows
+        >>> data_model.set_soft_time_windows(
+        ...     cudf.Series(types, dtype='uint8'),
+        ...     cudf.Series(penalties, dtype='float32')
+        ... )
+        """
+        n_orders = self.get_num_orders()
+        
+        # Convert to cudf Series if needed
+        if not isinstance(time_window_types, cudf.Series):
+            time_window_types = cudf.Series(time_window_types, dtype='uint8')
+        if not isinstance(penalties, cudf.Series):
+            penalties = cudf.Series(penalties, dtype='float32')
+            
+        # Validate input sizes
+        if len(time_window_types) != n_orders:
+            raise ValueError(f"time_window_types length ({len(time_window_types)}) "
+                           f"must match number of orders ({n_orders})")
+        if len(penalties) != n_orders:
+            raise ValueError(f"penalties length ({len(penalties)}) "
+                           f"must match number of orders ({n_orders})")
+        
+        # Validate time window types (must be 0 or 1)
+        if not ((time_window_types == 0) | (time_window_types == 1)).all():
+            raise ValueError("time_window_types must contain only 0 (strict) or 1 (soft)")
+            
+        # Validate penalties (must be non-negative)
+        if (penalties < 0).any():
+            raise ValueError("penalties must be non-negative")
+
+        super().set_soft_time_windows(time_window_types, penalties)
+
+    @catch_cuopt_exception
     def set_order_prizes(self, prizes):
         """
         Set prizes for orders

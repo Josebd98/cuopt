@@ -198,8 +198,10 @@ struct cost_dimension_info_t {
 
 struct time_dimension_info_t {
   HDI bool should_compute_travel_time() const { return has_max_constraint || has_travel_time_obj; }
+  HDI bool has_soft_time_windows() const { return has_soft_tw_penalty_obj; }
   bool has_max_constraint  = false;
   bool has_travel_time_obj = false;
+  bool has_soft_tw_penalty_obj = false;
   HDI constexpr bool has_constraints() const { return true; }
 };
 

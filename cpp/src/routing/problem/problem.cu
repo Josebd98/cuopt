@@ -273,8 +273,13 @@ void problem_t<i_t, f_t>::populate_dimensions_info()
 
   bool time_matrix_exists = data_view_ptr->get_transit_time_matrices().size() > 0;
 
+  // Check if soft time windows exist
+  auto soft_tw_info = data_view_ptr->get_soft_time_windows();
+  bool soft_tw_exists = soft_tw_info.get_time_window_types() != nullptr;
+  bool soft_tw_penalty_obj_exists = dimensions_info.has_objective(objective_t::SOFT_TIME_WINDOW_PENALTY);
+
   bool enable_time_dim = vehicle_max_times_exists || vehicle_tw_exists || travel_time_obj_exists ||
-                         order_tw_exists || time_matrix_exists;
+                         order_tw_exists || time_matrix_exists || soft_tw_exists;
 
   if (enable_time_dim) {
     dimensions_info.enable_dimension(dim_t::TIME);
@@ -285,6 +290,10 @@ void problem_t<i_t, f_t>::populate_dimensions_info()
     }
 
     if (travel_time_obj_exists) { time_dim_info.has_travel_time_obj = true; }
+    
+    if (soft_tw_penalty_obj_exists || soft_tw_exists) { 
+      time_dim_info.has_soft_tw_penalty_obj = true; 
+    }
   }
 
   // CAP dimensions info
