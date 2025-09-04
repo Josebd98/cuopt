@@ -46,10 +46,6 @@
      //! Copied from problem data time window start/end for convenience
   double window_start = 0.0;
   double window_end   = 0.0;
-  
-  //! Soft time window information copied for convenience
-  bool is_soft_time_window = false;
-  double soft_penalty_rate = 0.0;
  
    //! Time gathered to node and after node.
    //! These are needed when we use TIME as objective function, and max times as constraints
@@ -177,24 +173,46 @@
    {
      double time_violation = (excess_forward + excess_backward + max(0., departure_forward - departure_backward));
      
-     // Handle soft time window logic using node's own fields (like window_start/window_end)
-     printf("DEBUG NODE DELTA: node_id=%d, window=[%.1f,%.1f], is_soft=%s, penalty=%.1f\n", 
-            node_id, window_start, window_end, 
-            is_soft_time_window ? "true" : "false", soft_penalty_rate);
-     
-     if (is_soft_time_window) {
-       // For soft nodes, move time violations to objective cost instead of infeasibility
-       obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += time_violation * soft_penalty_rate;
+     // Handle soft time window logic using same system as time_route.cuh
+     // Use node_id to directly index soft_tw_types and soft_tw_penalties arrays
+     if (dim_info.has_soft_time_windows() && node_id >= 0 && 
+         dim_info.soft_tw_types != nullptr && dim_info.soft_tw_penalties != nullptr) {
        
-       // Don't add to inf_cost for soft nodes
-       inf_cost[dim_t::TIME] = 0.0;
+       printf("DEBUG NODE DELTA: node_id=%d, window=[%.1f,%.1f]\n", 
+              node_id, window_start, window_end);
        
-       printf("DEBUG NODE DELTA: Node %d SOFT: moving time_violation=%.2f to obj_cost (penalty=%.2f)\n", 
-              node_id, time_violation, time_violation * soft_penalty_rate);
+       // Same bounds checking as time_route.cuh - reasonable limit for most problems
+       if (node_id < 10000) {
+         bool is_soft_node = (dim_info.soft_tw_types[node_id] == 1);
+         printf("DEBUG NODE DELTA: soft_tw_types[%d]=%d, is_soft=%s\n", 
+                node_id, (int)dim_info.soft_tw_types[node_id], is_soft_node ? "true" : "false");
+         
+         if (is_soft_node) {
+           // For soft nodes, move time violations to objective cost instead of infeasibility
+           f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[node_id];
+           obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += time_violation * penalty_rate;
+           
+           // Don't add to inf_cost for soft nodes
+           inf_cost[dim_t::TIME] = 0.0;
+           
+           printf("DEBUG NODE DELTA: Node %d SOFT: moving time_violation=%.2f to obj_cost (penalty=%.2f)\n", 
+                  node_id, time_violation, time_violation * penalty_rate);
+         } else {
+           // For strict nodes, keep the original behavior
+           inf_cost[dim_t::TIME] = time_violation;
+           printf("DEBUG NODE DELTA: Node %d STRICT: keeping time_violation=%.2f in inf_cost\n", 
+                  node_id, time_violation);
+         }
+       } else {
+         // Invalid node_id - treat as strict
+         inf_cost[dim_t::TIME] = time_violation;
+         printf("DEBUG NODE DELTA: Node %d INVALID ID: keeping time_violation=%.2f in inf_cost\n", 
+                node_id, time_violation);
+       }
      } else {
-       // For strict nodes, keep the original behavior
+       // Original behavior when soft time windows are not enabled
        inf_cost[dim_t::TIME] = time_violation;
-       printf("DEBUG NODE DELTA: Node %d STRICT: keeping time_violation=%.2f in inf_cost\n", 
+       printf("DEBUG NODE DELTA: Node %d NO SOFT TW: keeping time_violation=%.2f in inf_cost\n", 
               node_id, time_violation);
      }
      
