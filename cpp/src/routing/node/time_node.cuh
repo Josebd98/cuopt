@@ -43,9 +43,13 @@
    double departure_backward = 0.0;
    //! [hy] backward time excess
    double excess_backward = 0.0;
-   //! Copied from problem data time window start/end for convenience
-   double window_start = 0.0;
-   double window_end   = 0.0;
+     //! Copied from problem data time window start/end for convenience
+  double window_start = 0.0;
+  double window_end   = 0.0;
+  
+  //! Soft time window information copied for convenience
+  bool is_soft_time_window = false;
+  double soft_penalty_rate = 0.0;
  
    //! Time gathered to node and after node.
    //! These are needed when we use TIME as objective function, and max times as constraints
@@ -173,56 +177,25 @@
    {
      double time_violation = (excess_forward + excess_backward + max(0., departure_forward - departure_backward));
      
-     // Handle soft time window logic if enabled and node_id is provided
-     if (dim_info.has_soft_time_windows() && node_id >= 0 && 
-         dim_info.soft_tw_types != nullptr && dim_info.soft_tw_penalties != nullptr) {
+     // Handle soft time window logic using node's own fields (like window_start/window_end)
+     printf("DEBUG NODE DELTA: node_id=%d, window=[%.1f,%.1f], is_soft=%s, penalty=%.1f\n", 
+            node_id, window_start, window_end, 
+            is_soft_time_window ? "true" : "false", soft_penalty_rate);
+     
+     if (is_soft_time_window) {
+       // For soft nodes, move time violations to objective cost instead of infeasibility
+       obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += time_violation * soft_penalty_rate;
        
-       // CRITICAL DEBUG: Verify that node_id maps correctly to order characteristics
-       // According to solution.cuh, ALL node characteristics use: node_idx = node_info.node()
-       // Time windows: earliest_time[node_idx], latest_time[node_idx]  
-       // Demand: demand[node_idx + i * get_num_orders()]
-       // So our soft_tw_types should ALSO use the same node_idx!
+       // Don't add to inf_cost for soft nodes
+       inf_cost[dim_t::TIME] = 0.0;
        
-       printf("DEBUG NODE DELTA: node_id=%d, window=[%.1f,%.1f]\n", 
-              node_id, window_start, window_end);
-              
-       // SIMPLE APPROACH: Just try to access and use bounds checking with known reasonable limits
-       // Most problems have < 10000 orders, so if node_id > 10000, it's likely invalid
-       if (node_id >= 0 && node_id < 10000) {
-         printf("DEBUG NODE DELTA: soft_tw_types[%d]=%d (assuming valid)\n", 
-                node_id, (int)dim_info.soft_tw_types[node_id]);
-       } else {
-         printf("DEBUG NODE DELTA: node_id=%d seems invalid (>10000 or negative)\n", node_id);
-       }
-       
-       // Check if this specific node has a soft time window (with simple bounds checking)
-       if (node_id >= 0 && node_id < 10000 && 
-           dim_info.soft_tw_types[node_id] == 1) { // 1 = soft time window
-         // For soft nodes, move time violations to objective cost instead of infeasibility
-         f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[node_id];
-         obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += time_violation * penalty_rate;
-         
-         // Don't add to inf_cost for soft nodes
-         inf_cost[dim_t::TIME] = 0.0;
-         
-         printf("DEBUG NODE DELTA: Node %d SOFT: moving time_violation=%.2f to obj_cost (penalty=%.2f)\n", 
-                node_id, time_violation, time_violation * penalty_rate);
-       } else {
-         // For strict nodes, keep the original behavior
-         inf_cost[dim_t::TIME] = time_violation;
-         printf("DEBUG NODE DELTA: Node %d STRICT: keeping time_violation=%.2f in inf_cost\n", 
-                node_id, time_violation);
-       }
+       printf("DEBUG NODE DELTA: Node %d SOFT: moving time_violation=%.2f to obj_cost (penalty=%.2f)\n", 
+              node_id, time_violation, time_violation * soft_penalty_rate);
      } else {
-       // Original behavior when soft time windows are not enabled or node_id not provided
+       // For strict nodes, keep the original behavior
        inf_cost[dim_t::TIME] = time_violation;
-       
-       // DEBUG: Show why we're not using soft time window logic
-       printf("DEBUG NODE DELTA FALLBACK: node_id=%d, has_soft_tw=%s, soft_tw_types=%p, time_violation=%.2f\\n", 
-              node_id, 
-              dim_info.has_soft_time_windows() ? "true" : "false",
-              (void*)dim_info.soft_tw_types,
-              time_violation);
+       printf("DEBUG NODE DELTA: Node %d STRICT: keeping time_violation=%.2f in inf_cost\n", 
+              node_id, time_violation);
      }
      
      if (dim_info.should_compute_travel_time()) {
