@@ -292,7 +292,13 @@ void problem_t<i_t, f_t>::populate_dimensions_info()
     if (travel_time_obj_exists) { time_dim_info.has_travel_time_obj = true; }
     
     if (soft_tw_penalty_obj_exists || soft_tw_exists) { 
-      time_dim_info.has_soft_tw_penalty_obj = true; 
+      time_dim_info.has_soft_tw_penalty_obj = true;
+      
+      // Configure soft time window data pointers
+      if (soft_tw_exists) {
+        time_dim_info.soft_tw_types = soft_tw_info.get_time_window_types();
+        time_dim_info.soft_tw_penalties = soft_tw_info.get_penalties();
+      }
     }
   }
 

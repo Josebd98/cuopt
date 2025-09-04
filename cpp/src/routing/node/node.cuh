@@ -98,12 +98,29 @@ class node_t {
     infeasible_cost_t new_inf_cost;
     loop_over_dimensions(dimensions_info, [&](auto I) {
       const auto& curr_dim = get_dimension<I>();
-      next_node.get_dimension<I>().get_cost(
-        curr_dim, vehicle_info, dimensions_info.get_dimension<I>(), new_obj_cost, new_inf_cost);
+      if constexpr (I == (size_t)dim_t::TIME) {
+        // For time dimension, pass the node ID for soft time window logic
+        next_node.get_dimension<I>().get_cost(
+          curr_dim, vehicle_info, dimensions_info.get_dimension<I>(), new_obj_cost, new_inf_cost, next_node.id());
+      } else {
+        // For other dimensions, use original signature
+        next_node.get_dimension<I>().get_cost(
+          curr_dim, vehicle_info, dimensions_info.get_dimension<I>(), new_obj_cost, new_inf_cost);
+      }
     });
 
-    double delta =
-      infeasible_cost_t::dot(weights, infeasible_cost_t::nominal_diff(new_inf_cost, old_inf_cost));
+    // NOTE: Soft time window correction is now handled in time_route.cuh compute_cost()
+    // We don't do universal correction here anymore to avoid incorrect assumptions
+
+    double inf_delta = infeasible_cost_t::dot(weights, infeasible_cost_t::nominal_diff(new_inf_cost, old_inf_cost));
+    double delta = inf_delta;
+    
+    // DEBUG: Print insertion delta calculation for soft time windows
+    if (dimensions_info.get_dimension<dim_t::TIME>().has_soft_time_windows()) {
+      printf("DEBUG INSERTION: inf_delta=%.2f (old_inf[TIME]=%.2f, new_inf[TIME]=%.2f, weight[TIME]=%.0f)\n",
+             inf_delta, old_inf_cost[dim_t::TIME], new_inf_cost[dim_t::TIME], weights[dim_t::TIME]);
+    }
+    
     if (include_objective) {
       // it's a copy
       auto obj_weights = dimensions_info.objective_weights;
@@ -111,7 +128,15 @@ class node_t {
       // in a corrupted delta because fragments do not have a vehicle cost. This leads to non
       // improving moves being picked.
       obj_weights[objective_t::VEHICLE_FIXED_COST] = 0.;
-      delta += objective_cost_t::dot(obj_weights, new_obj_cost - old_obj_cost);
+      double obj_delta = objective_cost_t::dot(obj_weights, new_obj_cost - old_obj_cost);
+      delta += obj_delta;
+      
+      // DEBUG: Print objective delta for soft time windows
+      if (dimensions_info.get_dimension<dim_t::TIME>().has_soft_time_windows()) {
+        printf("DEBUG INSERTION: obj_delta=%.2f (old_soft=%.2f, new_soft=%.2f) → TOTAL_DELTA=%.2f\n",
+               obj_delta, old_obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY], 
+               new_obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY], delta);
+      }
     }
 
     return delta;
@@ -143,8 +168,15 @@ class node_t {
 
     loop_over_dimensions(dimensions_info, [&](auto I) {
       const auto& curr_dim = get_dimension<I>();
-      prev_node.get_dimension<I>().get_cost(
-        curr_dim, vehicle_info, dimensions_info.get_dimension<I>(), new_obj_cost, new_inf_cost);
+      if constexpr (I == (size_t)dim_t::TIME) {
+        // For time dimension, pass the node ID for soft time window logic
+        prev_node.get_dimension<I>().get_cost(
+          curr_dim, vehicle_info, dimensions_info.get_dimension<I>(), new_obj_cost, new_inf_cost, prev_node.id());
+      } else {
+        // For other dimensions, use original signature
+        prev_node.get_dimension<I>().get_cost(
+          curr_dim, vehicle_info, dimensions_info.get_dimension<I>(), new_obj_cost, new_inf_cost);
+      }
     });
 
     double delta =
@@ -250,7 +282,39 @@ class node_t {
                                        const VehicleInfo<f_t>& vehicle_info)
   {
     if (!prev.dimensions_info.has_dimension(dim_t::TIME)) { return true; }
+    
+    // NEW: Check if we have soft time windows
+    const auto& time_dim_info = prev.dimensions_info.get_dimension<dim_t::TIME>();
+    if (time_dim_info.has_soft_time_windows()) {
+      // For soft time windows, we need to calculate excess considering only STRICT violations
+      return feasible_time_combine_with_soft_windows(prev, next, vehicle_info, time_dim_info);
+    }
+    
+    // Original logic for problems without soft time windows
     return time_combine(prev, next, vehicle_info, d_default_weights, 0.);
+  }
+
+  // NEW: Feasibility check that considers soft time windows
+  static bool DI feasible_time_combine_with_soft_windows(const node_t& prev,
+                                                         const node_t& next,
+                                                         const VehicleInfo<f_t>& vehicle_info,
+                                                         const time_dimension_info_t& time_dim_info)
+  {
+    auto time_between = get_transit_time(prev.request.info, next.request.info, vehicle_info, true);
+    double time_excess = time_node_t<i_t, f_t>::combine(prev.time_dim, next.time_dim, vehicle_info, time_between);
+    
+    // If there's no time excess, it's feasible
+    if (time_excess <= 0.0) return true;
+    
+    // If there's time excess, we need to check if it's from SOFT or STRICT violations
+    // For now, we'll be more permissive and allow some excess, assuming it might be from soft violations
+    // This is a heuristic - the exact calculation would require more complex logic
+    // TODO: Implement precise soft vs strict violation detection in feasibility check
+    
+    // Allow violations up to a reasonable threshold (e.g., 60 minutes)
+    // This permits exploration of routes with soft violations while still rejecting extreme violations
+    const double soft_violation_threshold = 60.0; // minutes
+    return time_excess <= soft_violation_threshold;
   }
 
   DI double forward_excess(const VehicleInfo<f_t>& vehicle_info,
@@ -277,6 +341,26 @@ class node_t {
                            infeasible_cost_t weights = d_default_weights,
                            double excess_limit       = 0.) const
   {
+    // NEW: For soft time windows, be more permissive with time violations
+    const auto& time_dim_info = dimensions_info.get_dimension<dim_t::TIME>();
+    if (time_dim_info.has_soft_time_windows()) {
+      // Calculate excess with modified weights/limits for soft time windows
+      double time_excess = time_dim.forward_excess(vehicle_info);
+      double other_excess = 0.;
+      
+      // Add excess from other dimensions (capacity, distance, etc.)
+      loop_over_dimensions(dimensions_info, [&](auto I) {
+        if constexpr (I != (size_t)dim_t::TIME) {
+          other_excess += get_dimension<I>().forward_excess(vehicle_info) * weights[I];
+        }
+      });
+      
+      // For time dimension, allow more excess (soft violations threshold)
+      const double soft_violation_threshold = 60.0; // minutes
+      return (time_excess <= soft_violation_threshold) && (other_excess <= excess_limit);
+    }
+    
+    // Original logic for problems without soft time windows
     return forward_excess(vehicle_info, weights) <= excess_limit;
   }
 

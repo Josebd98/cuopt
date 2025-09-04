@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+ConfigureTest(SOFT_WINDOWS_TEST  ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/soft_time_windows_test.cu)
+
 ConfigureTest(ROUTING_TEST ${CMAKE_CURRENT_SOURCE_DIR}/level0/l0_routing_test.cu)
 ConfigureTest(ROUTING_GES_TEST ${CMAKE_CURRENT_SOURCE_DIR}/level0/l0_ges_test.cu)
 
@@ -28,6 +30,7 @@ ConfigureTest(RETAIL_L1TEST ${CMAKE_CURRENT_SOURCE_DIR}/level1/l1_retail_test.cu
 # - L1  tests for quick regression check --------------------------------------------------------------------------
 ConfigureTest(ROUTING_L1TEST ${CMAKE_CURRENT_SOURCE_DIR}/level1/l1_routing_test.cu)
 
+
 # # - ${CMAKE_CURRENT_SOURCE_DIR} unit tests ----------------------------------------------------------------------------
 ConfigureTest(ROUTING_UNIT_TEST
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/vehicle_types.cu
@@ -42,5 +45,4 @@ ConfigureTest(ROUTING_UNIT_TEST
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/prize_collection.cu
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/objective_function.cu
       ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/top_k.cu
-      ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/soft_time_windows_test.cu
 )

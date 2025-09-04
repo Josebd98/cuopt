@@ -213,10 +213,12 @@ class time_route_t {
       block_copy(window_end.subspan(write_start), orig_route.window_end.subspan(from_idx), size);
     }
 
+    template<typename RouteView>
     DI void compute_cost(const VehicleInfo<f_t>& vehicle_info,
                          const i_t n_nodes_route,
                          objective_cost_t& obj_cost,
-                         infeasible_cost_t& inf_cost) const noexcept
+                         infeasible_cost_t& inf_cost,
+                         const RouteView* route = nullptr) const noexcept
     {
       inf_cost[dim_t::TIME] = static_cast<double>(excess_forward[n_nodes_route]);
 
@@ -236,39 +238,79 @@ class time_route_t {
       // the unconstrained arrival time. Since departure_forward is adjusted
       // to respect time windows, we use excess_forward to reconstruct the
       // original arrival time for penalty calculation.
-      if (dim_info.has_soft_time_windows() && soft_tw_types.data() != nullptr) {
+      
+      // DEBUG: Only print once per thread to avoid spam
+      static __device__ bool debug_printed = false;
+      if (!debug_printed && n_nodes_route > 0) {
+        debug_printed = true;
+        printf("DEBUG: dim_info.has_soft_time_windows() = %s\n", 
+               dim_info.has_soft_time_windows() ? "true" : "false");
+        printf("DEBUG: dim_info.soft_tw_types = %p\n", (void*)dim_info.soft_tw_types);
+        printf("DEBUG: n_nodes_route = %d\n", n_nodes_route);
+      }
+      
+      if (dim_info.has_soft_time_windows() && dim_info.soft_tw_types != nullptr && dim_info.soft_tw_penalties != nullptr) {
+        printf("DEBUG: Entering soft time window penalty calculation\n");
         double total_soft_penalty = 0.0;
         double soft_excess_to_subtract = 0.0;
         
         for (i_t i = 0; i < n_nodes_route; ++i) {
-          // Check if this node has a soft time window
-          if (soft_tw_types[i] == 1) { // 1 = soft time window
+          // Get the actual node ID (not route position)
+          i_t node_id = (route != nullptr) ? route->node_id(i) : i; // fallback to position if no route
+          
+          // Check if this node has a soft time window using node ID
+          printf("DEBUG: Node %d (pos %d): soft_tw_types[%d] = %d, window=[%.1f,%.1f]\n", 
+                 node_id, i, node_id, (int)dim_info.soft_tw_types[node_id], window_start[i], window_end[i]);
+          if (dim_info.soft_tw_types[node_id] == 1) { // 1 = soft time window
             double earliest_time = window_start[i];
             double latest_time = window_end[i];
-            f_t penalty_rate = soft_tw_penalties[i];
+            f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[node_id];
             
             // Reconstruct the unconstrained arrival time
             // departure_forward is clamped to [earliest, latest] for strict windows
             // excess_forward contains the amount of late violation for strict windows
             double unconstrained_arrival = departure_forward[i] + excess_forward[i];
             
+            printf("DEBUG: Node %d SOFT: window=[%.1f,%.1f], arrival=%.1f, penalty_rate=%.1f\n", 
+                   node_id, earliest_time, latest_time, unconstrained_arrival, penalty_rate);
+            
             // For soft windows, we want to penalize based on the unconstrained time
             double early_violation = max(0.0, earliest_time - unconstrained_arrival);
             double late_violation = max(0.0, unconstrained_arrival - latest_time);
+            
+            printf("DEBUG: Node %d violations: early=%.1f, late=%.1f\n", node_id, early_violation, late_violation);
+            
+            // Only process actual violations for this specific node
+            // Don't try to attribute other nodes' violations to this soft node
             
             total_soft_penalty += (early_violation + late_violation) * penalty_rate;
             
             // Subtract soft time window violations from infeasibility cost
             // since they should not make the solution infeasible
-            soft_excess_to_subtract += late_violation; // Only late violations contribute to excess_forward
+            soft_excess_to_subtract += late_violation; // This will reduce inf_cost
           }
         }
+        
+        printf("DEBUG: Final total_soft_penalty = %.2f\n", total_soft_penalty);
+        printf("DEBUG: soft_excess_to_subtract = %.2f\n", soft_excess_to_subtract);
+        printf("DEBUG: inf_cost[TIME] before = %.2f\n", inf_cost[dim_t::TIME]);
         
         obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = total_soft_penalty;
         
         // Remove soft time window violations from infeasibility cost
         // This ensures that soft time window violations don't make the solution infeasible
         inf_cost[dim_t::TIME] = max(0.0, inf_cost[dim_t::TIME] - soft_excess_to_subtract);
+        
+        // FALLBACK: If there's still inf_cost remaining and we have soft nodes, 
+        // it means our attribution logic didn't catch all soft violations
+        if (inf_cost[dim_t::TIME] > 0.0) {
+          printf("DEBUG FALLBACK: Still have inf_cost=%.2f after soft processing, this suggests unattributed soft violations\n", 
+                 inf_cost[dim_t::TIME]);
+          // For now, keep the remaining inf_cost to maintain correctness
+          // In a production system, we might want to investigate further
+        }
+        
+        printf("DEBUG: inf_cost[TIME] after = %.2f\n", inf_cost[dim_t::TIME]);
       }
     }
 
@@ -296,6 +338,7 @@ class time_route_t {
         thrust::tie(v.earliest_arrival_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
         thrust::tie(v.unavoidable_wait_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
       }
+
       return thrust::make_tuple(v, sh_ptr);
     }
 
@@ -346,6 +389,7 @@ class time_route_t {
       raft::device_span<double>{unavoidable_wait_backward.data(), unavoidable_wait_backward.size()};
 
     v.actual_arrival = raft::device_span<double>{actual_arrival.data(), actual_arrival.size()};
+    
     return v;
   }
 

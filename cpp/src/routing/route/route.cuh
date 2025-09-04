@@ -665,10 +665,17 @@ class route_t {
       objective_cost[0].zero_initialize();
       infeasibility_cost[0].zero_initialize();
 
-      loop_over_dimensions(dimensions_info(), [&](auto I) {
+          loop_over_dimensions(dimensions_info(), [&](auto I) {
+      if constexpr (I == (size_t)dim_t::TIME) {
+        // For time dimension, pass the route view for soft time window logic
+        get_dimension_of<I>(dimensions)
+          .compute_cost(this->vehicle_info(), *n_nodes, objective_cost[0], infeasibility_cost[0], this);
+      } else {
+        // For other dimensions, use original signature without route parameter
         get_dimension_of<I>(dimensions)
           .compute_cost(this->vehicle_info(), *n_nodes, objective_cost[0], infeasibility_cost[0]);
-      });
+      }
+    });
 
       return thrust::make_tuple(objective_cost[0], infeasibility_cost[0]);
     }

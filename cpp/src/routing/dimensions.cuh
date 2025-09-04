@@ -203,6 +203,10 @@ struct time_dimension_info_t {
   bool has_travel_time_obj = false;
   bool has_soft_tw_penalty_obj = false;
   HDI constexpr bool has_constraints() const { return true; }
+  
+  // Soft time window data pointers (using void* for type flexibility)
+  uint8_t const* soft_tw_types = nullptr;
+  void const* soft_tw_penalties = nullptr;  // Will be cast to f_t* when used
 };
 
 struct capacity_dimension_info_t {

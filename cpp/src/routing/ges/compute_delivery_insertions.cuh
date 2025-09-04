@@ -190,7 +190,8 @@ DI void find_request_insertion(typename solution_t<i_t, f_t, REQUEST>::view_t& v
                                                include_objective,
                                                weights,
                                                old_objective_cost,
-                                               old_infeasibility_cost);
+                                               old_infeasibility_cost,
+                                               node_insertion_idx);
         // atomically update the feasible_move for this request
         update_best_cand<i_t, f_t>(
           insertion_cost_delta, feasible_move, node_insertion_idx, node_insertion_idx);
