@@ -92,6 +92,12 @@ DI node_t<i_t, f_t, REQUEST> create_node(const typename problem_t<i_t, f_t>::vie
   node.time_dim.window_end         = latest;
   node.time_dim.departure_forward  = node.time_dim.window_start;
   node.time_dim.departure_backward = node.time_dim.window_end;
+  
+  // Set soft time window flag if available
+  if (problem.dimensions_info.time_dim.has_soft_time_windows() &&
+      problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
+    node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
+  }
 
   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
     if (i < node.capacity_dim.n_capacity_dimensions) {
@@ -160,6 +166,12 @@ constexpr node_t<i_t, f_t, REQUEST> create_node(const problem_t<i_t, f_t>* probl
   node.time_dim.window_end         = latest;
   node.time_dim.departure_forward  = node.time_dim.window_start;
   node.time_dim.departure_backward = node.time_dim.window_end;
+  
+  // Set soft time window flag if available
+  if (problem->dimensions_info.time_dim.has_soft_time_windows() &&
+      problem->dimensions_info.time_dim.soft_tw_types != nullptr) {
+    node.time_dim.is_soft_node = (problem->dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
+  }
 
   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
     if (i < node.capacity_dim.n_capacity_dimensions) {

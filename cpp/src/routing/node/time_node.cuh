@@ -37,12 +37,18 @@
   public:
    //! Hashimoto Yagiura [hy] forward departure time
    double departure_forward = 0.0;
-   //! [hy] forward time excess
-   double excess_forward = 0.0;
-   //! [hy] backward departure time
-   double departure_backward = 0.0;
-   //! [hy] backward time excess
-   double excess_backward = 0.0;
+     //! [hy] forward time excess
+  double excess_forward = 0.0;
+  //! Forward time excess from SOFT violations (should not go to inf_cost)
+  double soft_excess_forward = 0.0;
+  //! [hy] backward departure time
+  double departure_backward = 0.0;
+  //! [hy] backward time excess
+  double excess_backward = 0.0;
+  //! Backward time excess from SOFT violations (should not go to inf_cost)
+  double soft_excess_backward = 0.0;
+  //! Flag to remember if this node has soft time windows
+  bool is_soft_node = false;
      //! Copied from problem data time window start/end for convenience
   double window_start = 0.0;
   double window_end   = 0.0;
@@ -57,18 +63,52 @@
    double earliest_arrival_backward = 0.;
    double unavoidable_wait_backward = 0.;
  
-   /*! \brief { Calculate next node forward time data based on actual node} */
-   void HDI calculate_forward(time_node_t& next, double time_between) const noexcept
-   {
-     next.departure_forward = departure_forward + time_between;
-     next.excess_forward    = excess_forward;
- 
-     if (next.departure_forward < next.window_start) {
-       next.departure_forward = next.window_start;
-     } else if (next.departure_forward > next.window_end) {
-       next.excess_forward += next.departure_forward - next.window_end;
-       next.departure_forward = next.window_end;
+     /*! \brief { Calculate next node forward time data based on actual node} */
+    void HDI calculate_forward(time_node_t& next, double time_between) const noexcept
+ {
+   next.departure_forward = departure_forward + time_between;
+   next.excess_forward    = excess_forward;
+   next.soft_excess_forward = soft_excess_forward;  // Propagate soft excess
+
+   if (next.departure_forward < next.window_start) {
+     next.departure_forward = next.window_start;
+   } else if (next.departure_forward > next.window_end) {
+     double violation = next.departure_forward - next.window_end;
+     
+     if (next.is_soft_node) {
+       // For soft nodes, put violation in soft_excess instead of regular excess
+       next.soft_excess_forward += violation;
+     } else {
+       // For strict nodes, put in regular excess
+       next.excess_forward += violation;
      }
+     
+     next.departure_forward = next.window_end;
+   }
+ }
+
+  /*! \brief { Calculate next node forward time data with soft window awareness} */
+  void HDI calculate_forward(time_node_t& next, double time_between, bool next_is_soft) const noexcept
+  {
+    next.departure_forward = departure_forward + time_between;
+    next.excess_forward    = excess_forward;
+    next.soft_excess_forward = soft_excess_forward;  // Propagate soft excess
+
+    if (next.departure_forward < next.window_start) {
+      next.departure_forward = next.window_start;
+    } else if (next.departure_forward > next.window_end) {
+      double violation = next.departure_forward - next.window_end;
+      
+      if (next_is_soft) {
+        // For soft nodes, put violation in soft_excess instead of regular excess
+        next.soft_excess_forward += violation;
+      } else {
+        // For strict nodes, put in regular excess
+        next.excess_forward += violation;
+      }
+      
+      next.departure_forward = next.window_end;
+    }
  
      next.latest_arrival_forward   = latest_arrival_forward + time_between;
      next.unavoidable_wait_forward = unavoidable_wait_forward;
@@ -81,18 +121,52 @@
      next.transit_time_forward = transit_time_forward + time_between;
    }
  
-   /*! \brief { Calculate prev node time backward data based on actual node} */
-   void HDI calculate_backward(time_node_t& prev, double time_between) const noexcept
-   {
-     prev.departure_backward = departure_backward - time_between;
-     prev.excess_backward    = excess_backward;
- 
-     if (prev.departure_backward > prev.window_end)
-       prev.departure_backward = prev.window_end;
-     else if (prev.departure_backward < prev.window_start) {
-       prev.excess_backward += prev.window_start - prev.departure_backward;
-       prev.departure_backward = prev.window_start;
-     }
+     /*! \brief { Calculate prev node time backward data based on actual node} */
+    void HDI calculate_backward(time_node_t& prev, double time_between) const noexcept
+ {
+   prev.departure_backward = departure_backward - time_between;
+   prev.excess_backward    = excess_backward;
+   prev.soft_excess_backward = soft_excess_backward;  // Propagate soft excess
+
+    if (prev.departure_backward > prev.window_end)
+      prev.departure_backward = prev.window_end;
+    else if (prev.departure_backward < prev.window_start) {
+      double violation = prev.window_start - prev.departure_backward;
+      
+      if (prev.is_soft_node) {
+        // For soft nodes, put violation in soft_excess instead of regular excess
+        prev.soft_excess_backward += violation;
+      } else {
+        // For strict nodes, put in regular excess
+        prev.excess_backward += violation;
+      }
+      
+      prev.departure_backward = prev.window_start;
+    }
+ }
+
+  /*! \brief { Calculate prev node time backward data with soft window awareness} */
+  void HDI calculate_backward(time_node_t& prev, double time_between, bool prev_is_soft) const noexcept
+  {
+    prev.departure_backward = departure_backward - time_between;
+    prev.excess_backward    = excess_backward;
+    prev.soft_excess_backward = soft_excess_backward;  // Propagate soft excess
+
+    if (prev.departure_backward > prev.window_end)
+      prev.departure_backward = prev.window_end;
+    else if (prev.departure_backward < prev.window_start) {
+      double violation = prev.window_start - prev.departure_backward;
+      
+      if (prev_is_soft) {
+        // For soft nodes, put violation in soft_excess instead of regular excess
+        prev.soft_excess_backward += violation;
+      } else {
+        // For strict nodes, put in regular excess
+        prev.excess_backward += violation;
+      }
+      
+      prev.departure_backward = prev.window_start;
+    }
  
      prev.earliest_arrival_backward = earliest_arrival_backward - time_between;
      prev.unavoidable_wait_backward = unavoidable_wait_backward;
@@ -172,6 +246,7 @@
                      i_t node_id) const noexcept
    {
      double time_violation = (excess_forward + excess_backward + max(0., departure_forward - departure_backward));
+     double inherited_soft_violation = soft_excess_forward + soft_excess_backward;
      
      // Handle soft time window logic using same system as time_route.cuh
      // Use node_id to directly index soft_tw_types and soft_tw_penalties arrays
@@ -190,21 +265,37 @@
          printf("DEBUG NODE DELTA: soft_tw_types[%d]=%d, is_soft=%s\n", 
                 node_id, (int)dim_info.soft_tw_types[node_id], is_soft_node ? "true" : "false");
          
+         // First, handle inherited soft violations - they ALWAYS go to obj_cost
+         if (inherited_soft_violation > 0.0) {
+           // Use a default penalty rate for inherited soft violations (could be from config)
+           f_t inherited_penalty_rate = 1.0;  // TODO: Get this from config
+           obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += inherited_soft_violation * inherited_penalty_rate;
+           
+           printf("DEBUG NODE DELTA: Node %d: inherited_soft=%.2f goes to obj_cost (penalty=%.2f)\n", 
+                  node_id, inherited_soft_violation, inherited_soft_violation * inherited_penalty_rate);
+         }
+         
+         // Then handle this node's own violations
+         double own_violation = time_violation - inherited_soft_violation;
+         
          if (is_soft_node) {
-           // For soft nodes, move time violations to objective cost instead of infeasibility
-           f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[node_id];
-           obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += time_violation * penalty_rate;
+           // For soft nodes, move own violations to objective cost
+           if (own_violation > 0.0) {
+             f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[node_id];
+             obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] += own_violation * penalty_rate;
+             
+             printf("DEBUG NODE DELTA: Node %d SOFT: own_violation=%.2f goes to obj_cost (penalty=%.2f)\n", 
+                    node_id, own_violation, own_violation * penalty_rate);
+           }
            
-           // Don't add to inf_cost for soft nodes
+           // No inf_cost for soft nodes
            inf_cost[dim_t::TIME] = 0.0;
-           
-           printf("DEBUG NODE DELTA: Node %d SOFT: moving time_violation=%.2f to obj_cost (penalty=%.2f)\n", 
-                  node_id, time_violation, time_violation * penalty_rate);
          } else {
-           // For strict nodes, keep the original behavior
-           inf_cost[dim_t::TIME] = time_violation;
-           printf("DEBUG NODE DELTA: Node %d STRICT: keeping time_violation=%.2f in inf_cost\n", 
-                  node_id, time_violation);
+           // For strict nodes, only own violations go to inf_cost
+           inf_cost[dim_t::TIME] = max(0.0, own_violation);
+           
+           printf("DEBUG NODE DELTA: Node %d STRICT: own_violation=%.2f goes to inf_cost\n", 
+                  node_id, own_violation);
          }
        } else {
          // Invalid node_id - treat as strict
