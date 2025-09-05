@@ -56,13 +56,17 @@ __device__ void set_route_data(typename problem_t<i_t, f_t>::view_t const& probl
       time_route.departure_forward[0]              = earliest;
       time_route.excess_forward[0]                 = 0.f;
       time_route.excess_backward[n_nodes_route]    = 0.f;
+      time_route.soft_excess_forward[0]            = 0.f;
+      time_route.soft_excess_backward[n_nodes_route] = 0.f;
       if (time_route.dim_info.should_compute_travel_time()) {
         time_route.latest_arrival_forward[0]                = latest;
         time_route.earliest_arrival_backward[n_nodes_route] = earliest;
       }
-      cuopt_assert(abs(route.template get_dim<dim_t::TIME>().excess_forward[route.get_num_nodes()] -
-                       route.template get_dim<dim_t::TIME>().excess_backward[0]) < 0.0001,
-                   "Backward forward mismatch!");
+      double total_forward = route.template get_dim<dim_t::TIME>().excess_forward[route.get_num_nodes()] +
+                              route.template get_dim<dim_t::TIME>().soft_excess_forward[route.get_num_nodes()];
+      double total_backward = route.template get_dim<dim_t::TIME>().excess_backward[0] +
+                              route.template get_dim<dim_t::TIME>().soft_excess_backward[0];
+      cuopt_assert(abs(total_forward - total_backward) < 0.0001, "Backward forward mismatch!");
     }
     route.template get_dim<dim_t::DIST>().distance_backward[n_nodes_route] = 0.f;
     route.template get_dim<dim_t::DIST>().distance_forward[0]              = 0.f;

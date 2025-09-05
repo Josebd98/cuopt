@@ -145,14 +145,16 @@ class soft_time_window_t {
   uint8_t const* get_time_window_types() const { return time_window_types_; }
   f_t const* get_penalties() const { return penalties_; }
 
-  // Check if a specific order has a soft time window (1 = soft, 0 = strict)
-  __device__ inline bool is_soft_time_window(i_t order_idx) const {
-    return time_window_types_ != nullptr && time_window_types_[order_idx] == 1;
+  // Check if a specific node has a soft time window (1 = soft, 0 = strict)
+  // Note: node_idx includes depot (0) + orders (1, 2, ...)
+  __device__ inline bool is_soft_time_window(i_t node_idx) const {
+    return time_window_types_ != nullptr && time_window_types_[node_idx] == 1;
   }
 
-  // Get penalty rate for a specific order
-  __device__ inline f_t get_penalty_rate(i_t order_idx) const {
-    return penalties_ != nullptr ? penalties_[order_idx] : f_t(0.0);
+  // Get penalty rate for a specific node
+  // Note: node_idx includes depot (0) + orders (1, 2, ...)
+  __device__ inline f_t get_penalty_rate(i_t node_idx) const {
+    return penalties_ != nullptr ? penalties_[node_idx] : f_t(0.0);
   }
 
  private:

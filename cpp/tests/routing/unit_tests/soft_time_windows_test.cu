@@ -784,8 +784,8 @@
 TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
   std::cout << "\n=== SIMPLE TEST: Guaranteed soft violations ===" << std::endl;
   
-  // 2 orders, 1 vehicle - GUARANTEED soft violations
-  cuopt::routing::data_model_view_t<int, float> data_model(handle.get(), 3, 1, 2);
+  // 3 locations (depot + 2 orders), 1 vehicle, 3 total nodes - GUARANTEED soft violations
+  cuopt::routing::data_model_view_t<int, float> data_model(handle.get(), 3, 1, 3);
 
   // Cost matrix: depot→order0=20min, depot→order1=30min, order0→order1=15min  
   std::vector<float> cost_matrix_data = {
@@ -804,18 +804,18 @@ TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
   raft::copy(d_service_times.data(), service_times.data(), 2, handle->get_stream());
   data_model.set_order_service_times(d_service_times.data());
 
-  // Order locations
-  std::vector<int> order_locations = {1, 2};
-  rmm::device_uvector<int> d_order_locations(2, handle->get_stream());
-  raft::copy(d_order_locations.data(), order_locations.data(), 2, handle->get_stream());
+  // Order locations - INCLUDE depot like working test
+  std::vector<int> order_locations = {0, 1, 2};  // depot=0, order0=1, order1=2
+  rmm::device_uvector<int> d_order_locations(3, handle->get_stream());
+  raft::copy(d_order_locations.data(), order_locations.data(), 3, handle->get_stream());
   data_model.set_order_locations(d_order_locations.data());
 
   // Time windows: depot + 2 orders = 3 total
   // Route will be: depot(0) → order0(20+5=25min) → order1(25+15+5=45min)
   // Order0 SOFT window [0,15] → arrives 25, violates by 10 → SOFT PENALTY  
-  // Order1 STRICT window [0,100] → arrives 45, OK → NO VIOLATION
+  // Order1 STRICT window [0,50] → arrives 45, OK but close → MUST VISIT
   std::vector<int> earliest_times = {0, 0, 0};
-  std::vector<int> latest_times = {120, 15, 100};  // depot=120, order0=15(SOFT), order1=100(STRICT)
+  std::vector<int> latest_times = {1000, 15, 50};  // depot=1000, order0=15(SOFT), order1=50(STRICT-tighter)
   
   rmm::device_uvector<int> d_earliest_times(3, handle->get_stream());
   rmm::device_uvector<int> d_latest_times(3, handle->get_stream());
@@ -823,23 +823,38 @@ TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
   raft::copy(d_latest_times.data(), latest_times.data(), 3, handle->get_stream());
   data_model.set_order_time_windows(d_earliest_times.data(), d_latest_times.data());
 
-  // Soft time windows: SOLO para orders (NO incluir depot)
-  // Order 0 = SOFT(1), Order 1 = STRICT(0) 
-  std::vector<uint8_t> soft_tw_types = {1, 0};  // order0=SOFT, order1=STRICT
-  std::vector<float> soft_tw_penalties = {100.0f, 0.0f};  // High penalty for order0
+  // Soft time windows: INCLUYE depot (igual que time_windows, demands, etc.)
+  // depot=STRICT(0), Order 0=SOFT(1), Order 1=STRICT(0) 
+  std::vector<uint8_t> soft_tw_types = {0, 1, 0};  // depot=STRICT, order0=SOFT, order1=STRICT
+  std::vector<float> soft_tw_penalties = {0.0f, 100.0f, 0.0f};  // High penalty for order0 only
   
-  rmm::device_uvector<uint8_t> d_soft_tw_types(2, handle->get_stream());
-  rmm::device_uvector<float> d_soft_tw_penalties(2, handle->get_stream());
-  raft::copy(d_soft_tw_types.data(), soft_tw_types.data(), 2, handle->get_stream());
-  raft::copy(d_soft_tw_penalties.data(), soft_tw_penalties.data(), 2, handle->get_stream());
+  rmm::device_uvector<uint8_t> d_soft_tw_types(3, handle->get_stream());
+  rmm::device_uvector<float> d_soft_tw_penalties(3, handle->get_stream());
+  raft::copy(d_soft_tw_types.data(), soft_tw_types.data(), 3, handle->get_stream());
+  raft::copy(d_soft_tw_penalties.data(), soft_tw_penalties.data(), 3, handle->get_stream());
   data_model.set_soft_time_windows(d_soft_tw_types.data(), d_soft_tw_penalties.data());
 
-  // Vehicle with enough capacity
-  std::vector<int> order_demands = {1, 1};
+  // Vehicle with enough capacity - INCLUDE depot like working test
+  std::vector<int> order_demands = {0, 1, 1};  // depot=0, order0=1, order1=1
   std::vector<int> vehicle_capacities = {10};
   rmm::device_uvector<int> d_vehicle_capacities(1, handle->get_stream());
   raft::copy(d_vehicle_capacities.data(), vehicle_capacities.data(), 1, handle->get_stream());
-  data_model.add_capacity_dimension("capacity", order_demands.data(), d_vehicle_capacities.data());
+  rmm::device_uvector<int> d_order_demands(3, handle->get_stream());
+  raft::copy(d_order_demands.data(), order_demands.data(), 3, handle->get_stream());
+  data_model.add_capacity_dimension("capacity", d_order_demands.data(), d_vehicle_capacities.data());
+
+  // Configure objectives - only COST and SOFT penalties (no prizes)
+  std::vector<cuopt::routing::objective_t> objectives = {
+    cuopt::routing::objective_t::COST,
+    cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY
+  };
+  std::vector<float> objective_weights = {1.0f, 1.0f};
+  
+  rmm::device_uvector<cuopt::routing::objective_t> d_objectives(2, handle->get_stream());
+  rmm::device_uvector<float> d_obj_weights(2, handle->get_stream());
+  raft::copy(d_objectives.data(), objectives.data(), 2, handle->get_stream());
+  raft::copy(d_obj_weights.data(), objective_weights.data(), 2, handle->get_stream());
+  data_model.set_objective_function(d_objectives.data(), d_obj_weights.data(), 2);
 
   // Solver settings
   cuopt::routing::solver_settings_t<int, float> solver_settings;
@@ -861,6 +876,7 @@ TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
   std::cout << "  - Order 1: [0, 100] ← STRICT window, will arrive at ~40min → OK" << std::endl;
   
   std::cout << "\n🎯 SOFT TIME WINDOW CONFIG:" << std::endl;
+  std::cout << "  - Depot (node_id=0): STRICT (type=0), no penalty" << std::endl;
   std::cout << "  - Order 0 (node_id=1): SOFT (type=1), penalty=100.0 per minute" << std::endl;
   std::cout << "  - Order 1 (node_id=2): STRICT (type=0), no penalty" << std::endl;
   
@@ -889,12 +905,12 @@ TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
   for (int i = 0; i < 3; i++) std::cout << latest_times[i] << " ";
   std::cout << std::endl;
   
-  std::cout << "Soft TW types (2 elements): ";
-  for (int i = 0; i < 2; i++) std::cout << (int)soft_tw_types[i] << " ";
+  std::cout << "Soft TW types (3 elements): ";
+  for (int i = 0; i < 3; i++) std::cout << (int)soft_tw_types[i] << " ";
   std::cout << std::endl;
   
-  std::cout << "Soft TW penalties (2 elements): ";
-  for (int i = 0; i < 2; i++) std::cout << soft_tw_penalties[i] << " ";
+  std::cout << "Soft TW penalties (3 elements): ";
+  for (int i = 0; i < 3; i++) std::cout << soft_tw_penalties[i] << " ";
   std::cout << std::endl;
 
   // SOLVE

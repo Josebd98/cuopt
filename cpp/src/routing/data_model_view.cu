@@ -413,16 +413,17 @@ void data_model_view_t<i_t, f_t>::set_soft_time_windows(uint8_t const* time_wind
   
   if (validate_input) {
     // Validate that time_window_types contains only 0s and 1s
+    // Use num_locations_ to include depot + orders (consistent with other arrays)
     cuopt_expects(
       detail::check_min_max_values(
-        time_window_types, num_orders_, (uint8_t)0, (uint8_t)1, handle_ptr_->get_stream()),
+        time_window_types, num_locations_, (uint8_t)0, (uint8_t)1, handle_ptr_->get_stream()),
       error_type_t::ValidationError,
       "Time window types must be 0 (strict) or 1 (soft)!");
     
     // Validate that penalties are non-negative
     cuopt_expects(
       detail::check_min_max_values(
-        penalties, num_orders_, f_t(0.0), std::numeric_limits<f_t>::max(), handle_ptr_->get_stream()),
+        penalties, num_locations_, f_t(0.0), std::numeric_limits<f_t>::max(), handle_ptr_->get_stream()),
       error_type_t::ValidationError,
       "Penalties must be non-negative!");
   }
