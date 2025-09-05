@@ -70,21 +70,23 @@
    next.excess_forward    = excess_forward;
    next.soft_excess_forward = soft_excess_forward;  // Propagate soft excess
 
-   if (next.departure_forward < next.window_start) {
-     next.departure_forward = next.window_start;
-   } else if (next.departure_forward > next.window_end) {
-     double violation = next.departure_forward - next.window_end;
-     
-     if (next.is_soft_node) {
-       // For soft nodes, put violation in soft_excess instead of regular excess
-       next.soft_excess_forward += violation;
-     } else {
-       // For strict nodes, put in regular excess
-       next.excess_forward += violation;
-     }
-     
-     next.departure_forward = next.window_end;
-   }
+     if (next.departure_forward < next.window_start) {
+    next.departure_forward = next.window_start;
+  } else if (next.departure_forward > next.window_end) {
+    double violation = next.departure_forward - next.window_end;
+    
+    if (next.is_soft_node) {
+      // For soft nodes, put violation in soft_excess instead of regular excess
+      next.soft_excess_forward += violation;
+      printf("🟢 SOFT: %.0f → soft_excess=%.0f\n", violation, next.soft_excess_forward);
+    } else {
+      // For strict nodes, put in regular excess
+      next.excess_forward += violation;
+      printf("🔴 STRICT: %.0f → excess=%.0f\n", violation, next.excess_forward);
+    }
+    
+    next.departure_forward = next.window_end;
+  }
  }
 
   /*! \brief { Calculate next node forward time data with soft window awareness} */
@@ -128,20 +130,31 @@
    prev.excess_backward    = excess_backward;
    prev.soft_excess_backward = soft_excess_backward;  // Propagate soft excess
 
-    if (prev.departure_backward > prev.window_end)
+    if (prev.departure_backward > prev.window_end) {
       prev.departure_backward = prev.window_end;
-    else if (prev.departure_backward < prev.window_start) {
+      printf("DEBUG BACKWARD: Node late departure, adjusted to window_end=%.2f\n", prev.window_end);
+    } else if (prev.departure_backward < prev.window_start) {
       double violation = prev.window_start - prev.departure_backward;
+      
+      printf("DEBUG BACKWARD: Node EARLY departure! departure=%.2f, window_start=%.2f, violation=%.2f\n", 
+             prev.departure_backward, prev.window_start, violation);
       
       if (prev.is_soft_node) {
         // For soft nodes, put violation in soft_excess instead of regular excess
         prev.soft_excess_backward += violation;
+        printf("DEBUG BACKWARD: SOFT NODE → violation %.2f goes to soft_excess_backward (total=%.2f)\n", 
+               violation, prev.soft_excess_backward);
       } else {
         // For strict nodes, put in regular excess
         prev.excess_backward += violation;
+        printf("DEBUG BACKWARD: STRICT NODE → violation %.2f goes to excess_backward (total=%.2f)\n", 
+               violation, prev.excess_backward);
       }
       
       prev.departure_backward = prev.window_start;
+    } else {
+      printf("DEBUG BACKWARD: Node ON TIME! departure=%.2f within [%.2f, %.2f]\n", 
+             prev.departure_backward, prev.window_start, prev.window_end);
     }
  }
 

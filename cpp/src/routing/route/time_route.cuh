@@ -38,8 +38,10 @@ class time_route_t {
     : dim_info(dim_info_),
       departure_forward(0, sol_handle_->get_stream()),
       excess_forward(0, sol_handle_->get_stream()),
+      soft_excess_forward(0, sol_handle_->get_stream()),
       departure_backward(0, sol_handle_->get_stream()),
       excess_backward(0, sol_handle_->get_stream()),
+      soft_excess_backward(0, sol_handle_->get_stream()),
       window_start(0, sol_handle_->get_stream()),
       window_end(0, sol_handle_->get_stream()),
       transit_time_forward(0, sol_handle_->get_stream()),
@@ -57,8 +59,10 @@ class time_route_t {
     : dim_info(time_route.dim_info),
       departure_forward(time_route.departure_forward, sol_handle_->get_stream()),
       excess_forward(time_route.excess_forward, sol_handle_->get_stream()),
+      soft_excess_forward(time_route.soft_excess_forward, sol_handle_->get_stream()),
       departure_backward(time_route.departure_backward, sol_handle_->get_stream()),
       excess_backward(time_route.excess_backward, sol_handle_->get_stream()),
+      soft_excess_backward(time_route.soft_excess_backward, sol_handle_->get_stream()),
       window_start(time_route.window_start, sol_handle_->get_stream()),
       window_end(time_route.window_end, sol_handle_->get_stream()),
       transit_time_forward(time_route.transit_time_forward, sol_handle_->get_stream()),
@@ -78,8 +82,10 @@ class time_route_t {
   {
     departure_forward.resize(max_nodes_per_route, stream);
     excess_forward.resize(max_nodes_per_route, stream);
+    soft_excess_forward.resize(max_nodes_per_route, stream);
     departure_backward.resize(max_nodes_per_route, stream);
     excess_backward.resize(max_nodes_per_route, stream);
+    soft_excess_backward.resize(max_nodes_per_route, stream);
     window_start.resize(max_nodes_per_route, stream);
     window_end.resize(max_nodes_per_route, stream);
     actual_arrival.resize(max_nodes_per_route, stream);
@@ -107,10 +113,20 @@ class time_route_t {
       time_node_t<i_t, f_t> time_node;
       time_node.departure_forward  = departure_forward[idx];
       time_node.excess_forward     = excess_forward[idx];
+      time_node.soft_excess_forward = soft_excess_forward[idx];
       time_node.departure_backward = departure_backward[idx];
       time_node.excess_backward    = excess_backward[idx];
+      time_node.soft_excess_backward = soft_excess_backward[idx];
       time_node.window_start       = window_start[idx];
       time_node.window_end         = window_end[idx];
+      
+      // 🔧 SOLUCIÓN: Establecer is_soft_node basado en dim_info
+      if (dim_info.has_soft_time_windows() && dim_info.soft_tw_types != nullptr && idx < 10000) {
+        time_node.is_soft_node = (dim_info.soft_tw_types[idx] == 1);
+        // printf("🔄 GET_NODE[%d]: soft_tw_types[%d]=%d → is_soft_node=%s\n", 
+        //        idx, idx, (int)dim_info.soft_tw_types[idx],
+        //        time_node.is_soft_node ? "TRUE" : "FALSE");
+      }
       if (dim_info.should_compute_travel_time()) {
         time_node.transit_time_forward     = transit_time_forward[idx];
         time_node.latest_arrival_forward   = latest_arrival_forward[idx];
@@ -131,10 +147,17 @@ class time_route_t {
       set_backward_data(idx, node);
     }
 
-    DI void set_forward_data(i_t idx, const time_node_t<i_t, f_t>& node)
-    {
-      departure_forward[idx] = node.departure_forward;
-      excess_forward[idx]    = node.excess_forward;
+      DI void set_forward_data(i_t idx, const time_node_t<i_t, f_t>& node)
+  {
+    departure_forward[idx] = node.departure_forward;
+    excess_forward[idx]    = node.excess_forward;
+    soft_excess_forward[idx] = node.soft_excess_forward;
+    
+    // Solo logs importantes para violaciones
+    if (idx < 10 && (node.excess_forward > 0.0 || node.soft_excess_forward > 0.0)) {
+      printf("📋 SET[%d]: excess=%.0f, soft_excess=%.0f\n", 
+             idx, node.excess_forward, node.soft_excess_forward);
+    }
 
       if (dim_info.should_compute_travel_time()) {
         transit_time_forward[idx]     = node.transit_time_forward;
@@ -143,10 +166,11 @@ class time_route_t {
       }
     }
 
-    DI void set_backward_data(i_t idx, const time_node_t<i_t, f_t>& node)
-    {
-      departure_backward[idx] = node.departure_backward;
-      excess_backward[idx]    = node.excess_backward;
+      DI void set_backward_data(i_t idx, const time_node_t<i_t, f_t>& node)
+  {
+    departure_backward[idx] = node.departure_backward;
+    excess_backward[idx]    = node.excess_backward;
+    soft_excess_backward[idx] = node.soft_excess_backward;
 
       if (dim_info.should_compute_travel_time()) {
         transit_time_backward[idx]     = node.transit_time_backward;
@@ -163,6 +187,8 @@ class time_route_t {
                  size);
       block_copy(
         excess_forward.subspan(write_start), orig_route.excess_forward.subspan(start_idx), size);
+      block_copy(
+        soft_excess_forward.subspan(write_start), orig_route.soft_excess_forward.subspan(start_idx), size);
 
       if (dim_info.should_compute_travel_time()) {
         block_copy(transit_time_forward.subspan(write_start),
@@ -188,6 +214,8 @@ class time_route_t {
                  size);
       block_copy(
         excess_backward.subspan(write_start), orig_route.excess_backward.subspan(start_idx), size);
+      block_copy(
+        soft_excess_backward.subspan(write_start), orig_route.soft_excess_backward.subspan(start_idx), size);
 
       if (dim_info.should_compute_travel_time()) {
         block_copy(transit_time_backward.subspan(write_start),
@@ -233,84 +261,70 @@ class time_route_t {
         }
       }
 
-      // Calculate soft time window penalties and adjust infeasibility cost
-      // Note: For soft time windows, we need to calculate penalties based on
-      // the unconstrained arrival time. Since departure_forward is adjusted
-      // to respect time windows, we use excess_forward to reconstruct the
-      // original arrival time for penalty calculation.
-      
-      // DEBUG: Only print once per thread to avoid spam
-      static __device__ bool debug_printed = false;
-      if (!debug_printed && n_nodes_route > 0) {
-        debug_printed = true;
-        printf("DEBUG: dim_info.has_soft_time_windows() = %s\n", 
-               dim_info.has_soft_time_windows() ? "true" : "false");
-        printf("DEBUG: dim_info.soft_tw_types = %p\n", (void*)dim_info.soft_tw_types);
-        printf("DEBUG: n_nodes_route = %d\n", n_nodes_route);
-      }
+      // ===== SOFT TIME WINDOW PROCESSING =====
+      printf("🎯 RUTA[%d]: excess=%.0f, soft_excess=%.0f → inf_cost=%.0f\n", 
+             n_nodes_route, 
+             static_cast<double>(excess_forward[n_nodes_route]),
+             static_cast<double>(soft_excess_forward[n_nodes_route]),
+             inf_cost[dim_t::TIME]);
       
       if (dim_info.has_soft_time_windows() && dim_info.soft_tw_types != nullptr && dim_info.soft_tw_penalties != nullptr) {
-        printf("DEBUG: Entering soft time window penalty calculation\n");
+        // printf("DEBUG: Entering soft time window penalty calculation\n");
         double total_soft_penalty = 0.0;
-        double soft_excess_to_subtract = 0.0;
         
         for (i_t i = 0; i < n_nodes_route; ++i) {
           // Get the actual node ID (not route position)
           i_t node_id = (route != nullptr) ? route->node_id(i) : i; // fallback to position if no route
           
           // Check if this node has a soft time window using node ID
-          printf("DEBUG: Node %d (pos %d): soft_tw_types[%d] = %d, window=[%.1f,%.1f]\n", 
-                 node_id, i, node_id, (int)dim_info.soft_tw_types[node_id], window_start[i], window_end[i]);
+          // printf("DEBUG: Node %d (pos %d): soft_tw_types[%d] = %d, window=[%.1f,%.1f]\n", 
+          //        node_id, i, node_id, (int)dim_info.soft_tw_types[node_id], window_start[i], window_end[i]);
           if (dim_info.soft_tw_types[node_id] == 1) { // 1 = soft time window
             double earliest_time = window_start[i];
             double latest_time = window_end[i];
-            f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[node_id];
+            f_t penalty_rate = static_cast<const f_t*>(dim_info.soft_tw_penalties)[order_idx];
             
             // Reconstruct the unconstrained arrival time
             // departure_forward is clamped to [earliest, latest] for strict windows
             // excess_forward contains the amount of late violation for strict windows
             double unconstrained_arrival = departure_forward[i] + excess_forward[i];
             
-            printf("DEBUG: Node %d SOFT: window=[%.1f,%.1f], arrival=%.1f, penalty_rate=%.1f\n", 
-                   node_id, earliest_time, latest_time, unconstrained_arrival, penalty_rate);
+            // printf("DEBUG: Node %d SOFT: window=[%.1f,%.1f], arrival=%.1f, penalty_rate=%.1f\n", 
+            //        node_id, earliest_time, latest_time, unconstrained_arrival, penalty_rate);
             
             // For soft windows, we want to penalize based on the unconstrained time
             double early_violation = max(0.0, earliest_time - unconstrained_arrival);
             double late_violation = max(0.0, unconstrained_arrival - latest_time);
             
-            printf("DEBUG: Node %d violations: early=%.1f, late=%.1f\n", node_id, early_violation, late_violation);
+            // printf("DEBUG: Node %d violations: early=%.1f, late=%.1f\n", node_id, early_violation, late_violation);
             
-            // Only process actual violations for this specific node
-            // Don't try to attribute other nodes' violations to this soft node
-            
+            // Calculate penalty for this soft node
             total_soft_penalty += (early_violation + late_violation) * penalty_rate;
-            
-            // Subtract soft time window violations from infeasibility cost
-            // since they should not make the solution infeasible
-            soft_excess_to_subtract += late_violation; // This will reduce inf_cost
           }
         }
         
-        printf("DEBUG: Final total_soft_penalty = %.2f\n", total_soft_penalty);
-        printf("DEBUG: soft_excess_to_subtract = %.2f\n", soft_excess_to_subtract);
-        printf("DEBUG: inf_cost[TIME] before = %.2f\n", inf_cost[dim_t::TIME]);
+        // ===== CRITICAL INSIGHT =====
+        // The beauty of our two-tier system:
+        // - excess_forward[n_nodes_route] = ONLY strict violations
+        // - soft_excess_forward[n_nodes_route] = ONLY soft violations
+        // They are ALREADY SEPARATED by design!
+        
+        // printf("DEBUG ROUTE: ===== FINAL COST SEPARATION =====\n");
+        printf("💰 SOFT penalty: %.0f, STRICT violations: %.0f → inf_cost: %.0f\n", 
+               total_soft_penalty, static_cast<double>(excess_forward[n_nodes_route]), inf_cost[dim_t::TIME]);
         
         obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = total_soft_penalty;
         
-        // Remove soft time window violations from infeasibility cost
-        // This ensures that soft time window violations don't make the solution infeasible
-        inf_cost[dim_t::TIME] = max(0.0, inf_cost[dim_t::TIME] - soft_excess_to_subtract);
-        
-        // FALLBACK: If there's still inf_cost remaining and we have soft nodes, 
-        // it means our attribution logic didn't catch all soft violations
-        if (inf_cost[dim_t::TIME] > 0.0) {
-          printf("DEBUG FALLBACK: Still have inf_cost=%.2f after soft processing, this suggests unattributed soft violations\n", 
-                 inf_cost[dim_t::TIME]);
-          // For now, keep the remaining inf_cost to maintain correctness
-          // In a production system, we might want to investigate further
+        // KEY: inf_cost[TIME] already contains ONLY strict violations from excess_forward
+        // We don't need to subtract anything because soft violations never went there!
+        // Verification: show total violations if any
+        double total_violations = static_cast<double>(excess_forward[n_nodes_route]) + 
+                                 static_cast<double>(soft_excess_forward[n_nodes_route]);
+        if (total_violations > 0) {
+          printf("🔍 TOTAL: %.0f violations (strict=%.0f + soft=%.0f)\n", 
+                 total_violations, static_cast<double>(excess_forward[n_nodes_route]), 
+                 static_cast<double>(soft_excess_forward[n_nodes_route]));
         }
-        
-        printf("DEBUG: inf_cost[TIME] after = %.2f\n", inf_cost[dim_t::TIME]);
       }
     }
 
@@ -324,8 +338,10 @@ class time_route_t {
       v.dim_info                                = dim_info;
       thrust::tie(v.departure_forward, sh_ptr)  = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.excess_forward, sh_ptr)     = wrap_ptr_as_span<double>(sh_ptr, sz);
+      thrust::tie(v.soft_excess_forward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.departure_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.excess_backward, sh_ptr)    = wrap_ptr_as_span<double>(sh_ptr, sz);
+      thrust::tie(v.soft_excess_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.window_start, sh_ptr)       = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.window_end, sh_ptr)         = wrap_ptr_as_span<double>(sh_ptr, sz);
 
@@ -345,8 +361,10 @@ class time_route_t {
     time_dimension_info_t dim_info;
     raft::device_span<double> departure_forward;
     raft::device_span<double> excess_forward;
+    raft::device_span<double> soft_excess_forward;
     raft::device_span<double> departure_backward;
     raft::device_span<double> excess_backward;
+    raft::device_span<double> soft_excess_backward;
     raft::device_span<double> window_start;
     raft::device_span<double> window_end;
     raft::device_span<double> transit_time_forward;
@@ -368,9 +386,11 @@ class time_route_t {
     v.departure_forward =
       raft::device_span<double>{departure_forward.data(), departure_forward.size()};
     v.excess_forward = raft::device_span<double>{excess_forward.data(), excess_forward.size()};
+    v.soft_excess_forward = raft::device_span<double>{soft_excess_forward.data(), soft_excess_forward.size()};
     v.departure_backward =
       raft::device_span<double>{departure_backward.data(), departure_backward.size()};
     v.excess_backward = raft::device_span<double>{excess_backward.data(), excess_backward.size()};
+    v.soft_excess_backward = raft::device_span<double>{soft_excess_backward.data(), soft_excess_backward.size()};
     v.window_start    = raft::device_span<double>{window_start.data(), window_start.size()};
     v.window_end      = raft::device_span<double>{window_end.data(), window_end.size()};
 
@@ -401,9 +421,9 @@ class time_route_t {
    */
   HDI static size_t get_shared_size(i_t route_size, time_dimension_info_t dim_info)
   {
-    // departure_forward, excess_forward, departure_backward, excess_backward, window_start,
-    // window_end
-    return (6 + 6 * dim_info.should_compute_travel_time()) * route_size * sizeof(double);
+    // departure_forward, excess_forward, soft_excess_forward, departure_backward, 
+    // excess_backward, soft_excess_backward, window_start, window_end
+    return (8 + 6 * dim_info.should_compute_travel_time()) * route_size * sizeof(double);
   }
 
   time_dimension_info_t dim_info;
@@ -412,10 +432,14 @@ class time_route_t {
   rmm::device_uvector<double> departure_forward;
   // excess forward
   rmm::device_uvector<double> excess_forward;
+  // soft excess forward (for soft time window violations)
+  rmm::device_uvector<double> soft_excess_forward;
   // backward info
   rmm::device_uvector<double> departure_backward;
   // excess backward
   rmm::device_uvector<double> excess_backward;
+  // soft excess backward (for soft time window violations)
+  rmm::device_uvector<double> soft_excess_backward;
   // windows_start
   rmm::device_uvector<double> window_start;
   // window end

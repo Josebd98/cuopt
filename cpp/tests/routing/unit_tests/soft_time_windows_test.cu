@@ -611,7 +611,7 @@
  }
  
  // Test to verify that the algorithm prefers violating soft time windows over strict ones
- TEST_F(SoftTimeWindowsTest, PreferSoftOverStrictViolations) {
+ TEST_F(SoftTimeWindowsTest, ComplexSoftVsStrictDecisions) {
    std::cout << "\n=== TESTING: Algorithm should prefer soft violations over strict violations ===" << std::endl;
    
    // **SCENARIO DESIGN:**
@@ -777,6 +777,167 @@
      std::cout << "   might not be properly trading off soft vs strict violations" << std::endl;
    }
    
-   std::cout << "✅ Soft vs Strict preference test completed!" << std::endl;
- }
- 
+     std::cout << "✅ Soft vs Strict preference test completed!" << std::endl;
+}
+
+// Simple test with guaranteed soft violations
+TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
+  std::cout << "\n=== SIMPLE TEST: Guaranteed soft violations ===" << std::endl;
+  
+  // 2 orders, 1 vehicle - GUARANTEED soft violations
+  cuopt::routing::data_model_view_t<int, float> data_model(handle.get(), 3, 1, 2);
+
+  // Cost matrix: depot→order0=20min, depot→order1=30min, order0→order1=15min  
+  std::vector<float> cost_matrix_data = {
+    0.0f, 20.0f, 30.0f,  // From depot
+    20.0f, 0.0f, 15.0f,  // From order 0  
+    30.0f, 15.0f, 0.0f   // From order 1
+  };
+  rmm::device_uvector<float> cost_matrix(9, handle->get_stream());
+  raft::copy(cost_matrix.data(), cost_matrix_data.data(), 9, handle->get_stream());
+  data_model.add_cost_matrix(cost_matrix.data(), 0);
+  data_model.add_transit_time_matrix(cost_matrix.data(), 0);
+
+  // Service times: 5 min each
+  std::vector<int> service_times = {5, 5};
+  rmm::device_uvector<int> d_service_times(2, handle->get_stream());
+  raft::copy(d_service_times.data(), service_times.data(), 2, handle->get_stream());
+  data_model.set_order_service_times(d_service_times.data());
+
+  // Order locations
+  std::vector<int> order_locations = {1, 2};
+  rmm::device_uvector<int> d_order_locations(2, handle->get_stream());
+  raft::copy(d_order_locations.data(), order_locations.data(), 2, handle->get_stream());
+  data_model.set_order_locations(d_order_locations.data());
+
+  // Time windows: depot + 2 orders = 3 total
+  // Route will be: depot(0) → order0(20+5=25min) → order1(25+15+5=45min)
+  // Order0 SOFT window [0,15] → arrives 25, violates by 10 → SOFT PENALTY  
+  // Order1 STRICT window [0,100] → arrives 45, OK → NO VIOLATION
+  std::vector<int> earliest_times = {0, 0, 0};
+  std::vector<int> latest_times = {120, 15, 100};  // depot=120, order0=15(SOFT), order1=100(STRICT)
+  
+  rmm::device_uvector<int> d_earliest_times(3, handle->get_stream());
+  rmm::device_uvector<int> d_latest_times(3, handle->get_stream());
+  raft::copy(d_earliest_times.data(), earliest_times.data(), 3, handle->get_stream());
+  raft::copy(d_latest_times.data(), latest_times.data(), 3, handle->get_stream());
+  data_model.set_order_time_windows(d_earliest_times.data(), d_latest_times.data());
+
+  // Soft time windows: SOLO para orders (NO incluir depot)
+  // Order 0 = SOFT(1), Order 1 = STRICT(0) 
+  std::vector<uint8_t> soft_tw_types = {1, 0};  // order0=SOFT, order1=STRICT
+  std::vector<float> soft_tw_penalties = {100.0f, 0.0f};  // High penalty for order0
+  
+  rmm::device_uvector<uint8_t> d_soft_tw_types(2, handle->get_stream());
+  rmm::device_uvector<float> d_soft_tw_penalties(2, handle->get_stream());
+  raft::copy(d_soft_tw_types.data(), soft_tw_types.data(), 2, handle->get_stream());
+  raft::copy(d_soft_tw_penalties.data(), soft_tw_penalties.data(), 2, handle->get_stream());
+  data_model.set_soft_time_windows(d_soft_tw_types.data(), d_soft_tw_penalties.data());
+
+  // Vehicle with enough capacity
+  std::vector<int> order_demands = {1, 1};
+  std::vector<int> vehicle_capacities = {10};
+  rmm::device_uvector<int> d_vehicle_capacities(1, handle->get_stream());
+  raft::copy(d_vehicle_capacities.data(), vehicle_capacities.data(), 1, handle->get_stream());
+  data_model.add_capacity_dimension("capacity", order_demands.data(), d_vehicle_capacities.data());
+
+  // Solver settings
+  cuopt::routing::solver_settings_t<int, float> solver_settings;
+  solver_settings.set_time_limit(5.0);
+  solver_settings.set_verbose_mode(true);
+
+  // ===== DEBUG: VERIFICAR INFORMACIÓN ANTES DE RESOLVER =====
+  std::cout << "\n🔍 === VERIFICACIÓN DE DATOS ENVIADOS A CUOPT ===" << std::endl;
+  
+  std::cout << "\n📍 LOCATIONS & COST MATRIX:" << std::endl;
+  std::cout << "  - Depot (0): location 0" << std::endl;
+  std::cout << "  - Order 0: location 1, cost from depot = 20min" << std::endl;
+  std::cout << "  - Order 1: location 2, cost from depot = 30min" << std::endl;
+  std::cout << "  - Route: depot → order0(20min) → order1(+15min=35min total)" << std::endl;
+  
+  std::cout << "\n⏰ TIME WINDOWS (depot + orders):" << std::endl;
+  std::cout << "  - Depot:   [0, 120] (always OK)" << std::endl;
+  std::cout << "  - Order 0: [0, 15]  ← SOFT window, will arrive at ~25min → VIOLATION!" << std::endl;
+  std::cout << "  - Order 1: [0, 100] ← STRICT window, will arrive at ~40min → OK" << std::endl;
+  
+  std::cout << "\n🎯 SOFT TIME WINDOW CONFIG:" << std::endl;
+  std::cout << "  - Order 0 (node_id=1): SOFT (type=1), penalty=100.0 per minute" << std::endl;
+  std::cout << "  - Order 1 (node_id=2): STRICT (type=0), no penalty" << std::endl;
+  
+  std::cout << "\n🚛 VEHICLE CONFIG:" << std::endl;
+  std::cout << "  - 1 vehicle, capacity=10 (orders demand=1 each → OK)" << std::endl;
+  std::cout << "  - Service time=5min each order" << std::endl;
+  
+  std::cout << "\n📊 EXPECTED CALCULATION:" << std::endl;
+  std::cout << "  - Order 0 arrival: 20 (travel) + 5 (service) = 25min" << std::endl;
+  std::cout << "  - Order 0 violation: 25 - 15 = 10min LATE → penalty = 10 * 100 = 1000" << std::endl;
+  std::cout << "  - Order 1 arrival: 25 + 15 (travel) + 5 (service) = 45min" << std::endl;
+  std::cout << "  - Order 1 violation: 45 < 100 → NO VIOLATION" << std::endl;
+  std::cout << "  - Expected soft penalty: 1000" << std::endl;
+
+  // ===== VERIFICAR DATOS EN HOST ANTES DE ENVIAR =====
+  std::cout << "\n🔍 === VERIFICACIÓN DE VECTORES HOST ===" << std::endl;
+  std::cout << "Cost matrix (9 elements): ";
+  for (int i = 0; i < 9; i++) std::cout << cost_matrix_data[i] << " ";
+  std::cout << std::endl;
+  
+  std::cout << "Time windows earliest (3 elements): ";
+  for (int i = 0; i < 3; i++) std::cout << earliest_times[i] << " ";
+  std::cout << std::endl;
+  
+  std::cout << "Time windows latest (3 elements): ";
+  for (int i = 0; i < 3; i++) std::cout << latest_times[i] << " ";
+  std::cout << std::endl;
+  
+  std::cout << "Soft TW types (2 elements): ";
+  for (int i = 0; i < 2; i++) std::cout << (int)soft_tw_types[i] << " ";
+  std::cout << std::endl;
+  
+  std::cout << "Soft TW penalties (2 elements): ";
+  for (int i = 0; i < 2; i++) std::cout << soft_tw_penalties[i] << " ";
+  std::cout << std::endl;
+
+  // SOLVE
+  std::cout << "\n🚀 === RESOLVIENDO PROBLEMA ===" << std::endl;
+  auto solution = cuopt::routing::solve(data_model, solver_settings);
+  
+  std::cout << "\n🎯 EXPECTED vs ACTUAL:" << std::endl;
+  
+  if (solution.get_status() == cuopt::routing::solution_status_t::SUCCESS) {
+    auto objectives = solution.get_objectives();
+    auto soft_penalty = objectives.find(cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY);
+    double actual_soft_penalty = (soft_penalty != objectives.end()) ? soft_penalty->second : 0.0;
+    
+    std::cout << "\n📊 === RESULTADOS FINALES ===" << std::endl;
+    std::cout << "  - Status: ✅ SUCCESS" << std::endl;
+    std::cout << "  - Expected soft penalty: 1000" << std::endl;
+    std::cout << "  - Actual soft penalty: " << actual_soft_penalty << std::endl;
+    std::cout << "  - Total cost: " << solution.get_total_objective() << std::endl;
+    
+    // Mostrar la ruta encontrada
+    auto& routes = solution.get_route();
+    std::vector<int> h_routes(routes.size());
+    raft::copy(h_routes.data(), routes.data(), routes.size(), handle->get_stream());
+    handle->sync_stream();
+    
+    std::cout << "\n🗺️  RUTA ENCONTRADA: ";
+    for (size_t i = 0; i < h_routes.size(); i++) {
+      std::cout << h_routes[i];
+      if (i < h_routes.size() - 1) std::cout << " → ";
+    }
+    std::cout << std::endl;
+    
+    if (actual_soft_penalty > 0) {
+      std::cout << "\n✅ PERFECTO: El algoritmo detectó y penalizó violaciones SOFT!" << std::endl;
+      std::cout << "   Diferencia con lo esperado: " << (actual_soft_penalty - 1000) << std::endl;
+    } else {
+      std::cout << "\n❌ PROBLEMA: No se encontraron penalizaciones soft" << std::endl;
+      std::cout << "   Esto indica que el algoritmo no está procesando correctamente las ventanas soft" << std::endl;
+      FAIL();
+    }
+  } else {
+    std::cout << "\n❌ FAIL: Solution status = " << static_cast<int>(solution.get_status()) << std::endl;
+    std::cout << "   El algoritmo no pudo resolver el problema simple" << std::endl;
+    FAIL();
+  }
+}

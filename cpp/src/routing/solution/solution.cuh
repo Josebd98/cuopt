@@ -96,7 +96,19 @@ DI node_t<i_t, f_t, REQUEST> create_node(const typename problem_t<i_t, f_t>::vie
   // Set soft time window flag if available
   if (problem.dimensions_info.time_dim.has_soft_time_windows() &&
       problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
-    node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
+    // Convert node_idx to order index (subtract depot offset)
+    // node_idx=0 (depot) → no soft_tw entry
+    // node_idx=1 (order0) → soft_tw_types[0] 
+    // node_idx=2 (order1) → soft_tw_types[1]
+    i_t order_idx = node_idx - (problem.order_info.depot_included ? 1 : 0);
+    if (order_idx >= 0 && order_idx < problem.order_info.get_num_orders()) {
+      node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[order_idx] == 1);
+    } else {
+      node.time_dim.is_soft_node = false; // Depot is never soft
+    }
+    // printf("🏗️ CREATE_NODE[%d]: soft_tw_types[%d]=%d → is_soft_node=%s\n", 
+    //        node_idx, node_idx, (int)problem.dimensions_info.time_dim.soft_tw_types[node_idx],
+    //        node.time_dim.is_soft_node ? "TRUE" : "FALSE");
   }
 
   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
