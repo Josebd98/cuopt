@@ -178,8 +178,11 @@
      if (dim_info.has_soft_time_windows() && node_id >= 0 && 
          dim_info.soft_tw_types != nullptr && dim_info.soft_tw_penalties != nullptr) {
        
-       printf("DEBUG NODE DELTA: node_id=%d, window=[%.1f,%.1f]\n", 
-              node_id, window_start, window_end);
+            printf("DEBUG NODE DELTA: node_id=%d, window=[%.1f,%.1f], excess_fwd=%.1f, excess_bwd=%.1f, dep_fwd=%.1f, dep_bwd=%.1f\n", 
+            node_id, window_start, window_end, excess_forward, excess_backward, departure_forward, departure_backward);
+     printf("DEBUG NODE DELTA: VIOLATION BREAKDOWN: excess_fwd=%.1f + excess_bwd=%.1f + max(0,dep_fwd-dep_bwd)=%.1f = %.1f\n",
+            excess_forward, excess_backward, max(0., departure_forward - departure_backward),
+            excess_forward + excess_backward + max(0., departure_forward - departure_backward));
        
        // Same bounds checking as time_route.cuh - reasonable limit for most problems
        if (node_id < 10000) {
