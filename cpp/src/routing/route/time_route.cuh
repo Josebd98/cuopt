@@ -42,8 +42,9 @@
       departure_backward(0, sol_handle_->get_stream()),
       excess_backward(0, sol_handle_->get_stream()),
       soft_excess_backward(0, sol_handle_->get_stream()),
-       window_start(0, sol_handle_->get_stream()),
-       window_end(0, sol_handle_->get_stream()),
+      window_start(0, sol_handle_->get_stream()),
+      window_end(0, sol_handle_->get_stream()),
+      is_soft_node(0, sol_handle_->get_stream()),
        transit_time_forward(0, sol_handle_->get_stream()),
        latest_arrival_forward(0, sol_handle_->get_stream()),
        unavoidable_wait_forward(0, sol_handle_->get_stream()),
@@ -63,8 +64,9 @@
       departure_backward(time_route.departure_backward, sol_handle_->get_stream()),
       excess_backward(time_route.excess_backward, sol_handle_->get_stream()),
       soft_excess_backward(time_route.soft_excess_backward, sol_handle_->get_stream()),
-       window_start(time_route.window_start, sol_handle_->get_stream()),
-       window_end(time_route.window_end, sol_handle_->get_stream()),
+        window_start(time_route.window_start, sol_handle_->get_stream()),
+        window_end(time_route.window_end, sol_handle_->get_stream()),
+        is_soft_node(time_route.is_soft_node, sol_handle_->get_stream()),
        transit_time_forward(time_route.transit_time_forward, sol_handle_->get_stream()),
        latest_arrival_forward(time_route.latest_arrival_forward, sol_handle_->get_stream()),
        unavoidable_wait_forward(time_route.unavoidable_wait_forward, sol_handle_->get_stream()),
@@ -86,8 +88,9 @@
     departure_backward.resize(max_nodes_per_route, stream);
     excess_backward.resize(max_nodes_per_route, stream);
     soft_excess_backward.resize(max_nodes_per_route, stream);
-     window_start.resize(max_nodes_per_route, stream);
-     window_end.resize(max_nodes_per_route, stream);
+    window_start.resize(max_nodes_per_route, stream);
+    window_end.resize(max_nodes_per_route, stream);
+    is_soft_node.resize(max_nodes_per_route, stream);
      actual_arrival.resize(max_nodes_per_route, stream);
  
      if (dim_info.should_compute_travel_time()) {
@@ -108,22 +111,23 @@
    struct view_t {
      bool is_empty() const { return window_start.empty(); }
  
-     DI time_node_t<i_t, f_t> get_node(i_t idx) const
-     {
-       time_node_t<i_t, f_t> time_node;
-             time_node.departure_forward  = departure_forward[idx];
-      time_node.excess_forward     = excess_forward[idx];
-      time_node.soft_excess_forward = soft_excess_forward[idx];
-      time_node.departure_backward = departure_backward[idx];
-      time_node.excess_backward    = excess_backward[idx];
-      time_node.soft_excess_backward = soft_excess_backward[idx];
-      time_node.window_start       = window_start[idx];
-      time_node.window_end         = window_end[idx];
-      
-      // Set soft time window flag if available
-      if (dim_info.has_soft_time_windows() && dim_info.soft_tw_types != nullptr) {
-        time_node.is_soft_node = (dim_info.soft_tw_types[idx] == 1);
-      }
+    DI time_node_t<i_t, f_t> get_node(i_t idx) const
+    {
+      time_node_t<i_t, f_t> time_node;
+            time_node.departure_forward  = departure_forward[idx];
+     time_node.excess_forward     = excess_forward[idx];
+     time_node.soft_excess_forward = soft_excess_forward[idx];
+     time_node.departure_backward = departure_backward[idx];
+     time_node.excess_backward    = excess_backward[idx];
+     time_node.soft_excess_backward = soft_excess_backward[idx];
+     time_node.window_start       = window_start[idx];
+     time_node.window_end         = window_end[idx];
+     time_node.is_soft_node       = (is_soft_node[idx] == 1);  // ← READ soft flag from array (int to bool)
+     time_node.debug_node_id      = idx;  // Set debug ID for tracing
+     
+     printf("🔧 GET_NODE[%d]: is_soft_node=%s (from array), window=[%.1f,%.1f]\n", 
+            idx, time_node.is_soft_node ? "TRUE" : "FALSE", 
+            time_node.window_start, time_node.window_end);
       
       if (dim_info.should_compute_travel_time()) {
          time_node.transit_time_forward     = transit_time_forward[idx];
@@ -137,19 +141,26 @@
        return time_node;
      }
  
-     DI void set_node(i_t idx, const time_node_t<i_t, f_t>& node)
-     {
-       window_start[idx] = node.window_start;
-       window_end[idx]   = node.window_end;
-       set_forward_data(idx, node);
-       set_backward_data(idx, node);
-     }
+    DI void set_node(i_t idx, const time_node_t<i_t, f_t>& node)
+    {
+      window_start[idx] = node.window_start;
+      window_end[idx]   = node.window_end;
+      is_soft_node[idx] = node.is_soft_node ? 1 : 0;  // ← COPY soft flag to array (bool to int)
+      set_forward_data(idx, node);
+      set_backward_data(idx, node);
+    }
  
            DI void set_forward_data(i_t idx, const time_node_t<i_t, f_t>& node)
       {
         departure_forward[idx] = node.departure_forward;
         excess_forward[idx]    = node.excess_forward;
         soft_excess_forward[idx] = node.soft_excess_forward;
+        
+        // DEBUG: Print what we're setting (only from thread 0)
+        if (threadIdx.x == 0) {
+          printf("📝 SET_FORWARD_DATA[%d]: excess_forward=%.2f, soft_excess_forward=%.2f\n",
+                 idx, node.excess_forward, node.soft_excess_forward);
+        }
  
        if (dim_info.should_compute_travel_time()) {
          transit_time_forward[idx]     = node.transit_time_forward;
@@ -228,9 +239,10 @@
                                    i_t write_start)
      {
        auto size = to_idx - from_idx;
-       block_copy(
-         window_start.subspan(write_start), orig_route.window_start.subspan(from_idx), size);
-       block_copy(window_end.subspan(write_start), orig_route.window_end.subspan(from_idx), size);
+      block_copy(
+        window_start.subspan(write_start), orig_route.window_start.subspan(from_idx), size);
+      block_copy(window_end.subspan(write_start), orig_route.window_end.subspan(from_idx), size);
+      block_copy(is_soft_node.subspan(write_start), orig_route.is_soft_node.subspan(from_idx), size);
      }
  
          DI void compute_cost(const VehicleInfo<f_t>& vehicle_info,
@@ -239,13 +251,31 @@
                          infeasible_cost_t& inf_cost,
                          [[maybe_unused]] const void* route_ptr = nullptr) const noexcept
     {
-      // STRICT time window violations go to inf_cost
       inf_cost[dim_t::TIME] = static_cast<double>(excess_forward[n_nodes_route]);
+      
+      // DEBUG: Print route-level inf_cost
+      if (threadIdx.x == 0) {
+        printf("🛣️ ROUTE_GET_COST: inf_cost[TIME]=%.2f (accumulated excess_forward[%d])\n",
+               inf_cost[dim_t::TIME], n_nodes_route);
+      }
       
       // SOFT time window violations go to obj_cost (penalty)
       if (dim_info.has_soft_time_windows()) {
+        // DEBUG: Print ALL array values to see what's happening
+        if (threadIdx.x == 0) {
+          printf("🔍 ROUTE ARRAY DEBUG: n_nodes_route=%d\n", n_nodes_route);
+          for (i_t i = 0; i <= n_nodes_route; i++) {
+            printf("   [%d] excess_forward=%.2f, soft_excess_forward=%.2f\n", 
+                   i, static_cast<double>(excess_forward[i]), static_cast<double>(soft_excess_forward[i]));
+          }
+        }
+        
         obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = 
           static_cast<double>(soft_excess_forward[n_nodes_route]);
+        if (threadIdx.x == 0) {
+          printf("🛣️ ROUTE_GET_COST: obj_cost[SOFT_PENALTY]=%.2f (only soft_excess_forward[%d])\n",
+                 obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY], n_nodes_route);
+        }
       }
 
       if (dim_info.should_compute_travel_time()) {
@@ -274,8 +304,9 @@
       thrust::tie(v.departure_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.excess_backward, sh_ptr)    = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.soft_excess_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
-       thrust::tie(v.window_start, sh_ptr)       = wrap_ptr_as_span<double>(sh_ptr, sz);
-       thrust::tie(v.window_end, sh_ptr)         = wrap_ptr_as_span<double>(sh_ptr, sz);
+      thrust::tie(v.window_start, sh_ptr)       = wrap_ptr_as_span<double>(sh_ptr, sz);
+      thrust::tie(v.window_end, sh_ptr)         = wrap_ptr_as_span<double>(sh_ptr, sz);
+      thrust::tie(v.is_soft_node, sh_ptr)       = wrap_ptr_as_span<int>(sh_ptr, sz);
  
        if (dim_info.should_compute_travel_time()) {
          thrust::tie(v.transit_time_forward, sh_ptr)     = wrap_ptr_as_span<double>(sh_ptr, sz);
@@ -296,8 +327,9 @@
     raft::device_span<double> departure_backward;
     raft::device_span<double> excess_backward;
     raft::device_span<double> soft_excess_backward;
-     raft::device_span<double> window_start;
-     raft::device_span<double> window_end;
+    raft::device_span<double> window_start;
+    raft::device_span<double> window_end;
+    raft::device_span<int> is_soft_node;
      raft::device_span<double> transit_time_forward;
      raft::device_span<double> latest_arrival_forward;
      raft::device_span<double> unavoidable_wait_forward;
@@ -319,8 +351,9 @@
       raft::device_span<double>{departure_backward.data(), departure_backward.size()};
     v.excess_backward = raft::device_span<double>{excess_backward.data(), excess_backward.size()};
     v.soft_excess_backward = raft::device_span<double>{soft_excess_backward.data(), soft_excess_backward.size()};
-     v.window_start    = raft::device_span<double>{window_start.data(), window_start.size()};
-     v.window_end      = raft::device_span<double>{window_end.data(), window_end.size()};
+    v.window_start    = raft::device_span<double>{window_start.data(), window_start.size()};
+    v.window_end      = raft::device_span<double>{window_end.data(), window_end.size()};
+    v.is_soft_node    = raft::device_span<int>{is_soft_node.data(), is_soft_node.size()};
  
      v.transit_time_forward =
        raft::device_span<double>{transit_time_forward.data(), transit_time_forward.size()};
@@ -348,9 +381,9 @@
     */
    HDI static size_t get_shared_size(i_t route_size, time_dimension_info_t dim_info)
    {
-         // departure_forward, excess_forward, soft_excess_forward, departure_backward, 
-    // excess_backward, soft_excess_backward, window_start, window_end
-    return (8 + 6 * dim_info.should_compute_travel_time()) * route_size * sizeof(double);
+        // departure_forward, excess_forward, soft_excess_forward, departure_backward, 
+   // excess_backward, soft_excess_backward, window_start, window_end, is_soft_node
+   return (8 * sizeof(double) + 1 * sizeof(int) + 6 * dim_info.should_compute_travel_time() * sizeof(double)) * route_size;
    }
  
    time_dimension_info_t dim_info;
@@ -367,10 +400,12 @@
   rmm::device_uvector<double> excess_backward;
   // soft excess backward (for soft time window violations)
   rmm::device_uvector<double> soft_excess_backward;
-   // windows_start
-   rmm::device_uvector<double> window_start;
-   // window end
-   rmm::device_uvector<double> window_end;
+  // windows_start
+  rmm::device_uvector<double> window_start;
+  // window end
+  rmm::device_uvector<double> window_end;
+  // soft time window flags (using int for proper memory alignment)
+  rmm::device_uvector<int> is_soft_node;
    // forward accumulated data
    rmm::device_uvector<double> transit_time_forward;
    rmm::device_uvector<double> latest_arrival_forward;

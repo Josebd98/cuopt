@@ -88,18 +88,20 @@
  
    double latest = problem.order_info.latest_time[node_idx];
  
-   node.time_dim.window_start       = earliest;
-   node.time_dim.window_end         = latest;
-   node.time_dim.departure_forward  = node.time_dim.window_start;
-   node.time_dim.departure_backward = node.time_dim.window_end;
-   
+  node.time_dim.window_start       = earliest;
+  node.time_dim.window_end         = latest;
+  node.time_dim.departure_forward  = node.time_dim.window_start;
+  node.time_dim.departure_backward = node.time_dim.window_end;
+  node.time_dim.debug_node_id      = node_idx;  // Set debug ID for tracing
+  
    // Set soft time window flag if available
    if (problem.dimensions_info.time_dim.has_soft_time_windows() &&
        problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
      node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
-     // printf("🏗️ CREATE_NODE[%d]: soft_tw_types[%d]=%d → is_soft_node=%s\n", 
-     //        node_idx, node_idx, (int)problem.dimensions_info.time_dim.soft_tw_types[node_idx],
-     //        node.time_dim.is_soft_node ? "TRUE" : "FALSE");
+     printf("🏗️ CREATE_NODE[%d]: soft_tw_types[%d]=%d → is_soft_node=%s, window=[%.1f,%.1f], node_type=%s\n", 
+            node_idx, node_idx, (int)problem.dimensions_info.time_dim.soft_tw_types[node_idx],
+            node.time_dim.is_soft_node ? "TRUE" : "FALSE", earliest, latest,
+            node_info.is_depot() ? "DEPOT" : "ORDER");
    }
  
    constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
@@ -165,16 +167,17 @@
  
    double latest = problem->order_info_h.latest_time[node_idx];
  
-   node.time_dim.window_start       = earliest;
-   node.time_dim.window_end         = latest;
-   node.time_dim.departure_forward  = node.time_dim.window_start;
-   node.time_dim.departure_backward = node.time_dim.window_end;
-   
-   // Set soft time window flag if available
-   if (problem->dimensions_info.time_dim.has_soft_time_windows() &&
-       problem->dimensions_info.time_dim.soft_tw_types != nullptr) {
-     node.time_dim.is_soft_node = (problem->dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
-   }
+  node.time_dim.window_start       = earliest;
+  node.time_dim.window_end         = latest;
+  node.time_dim.departure_forward  = node.time_dim.window_start;
+  node.time_dim.departure_backward = node.time_dim.window_end;
+  node.time_dim.debug_node_id      = node_idx;  // Set debug ID for tracing
+  
+  // Set soft time window flag if available
+  if (problem->dimensions_info.time_dim.has_soft_time_windows() &&
+      problem->dimensions_info.time_dim.soft_tw_types != nullptr) {
+    node.time_dim.is_soft_node = (problem->dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
+  }
  
    constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
      if (i < node.capacity_dim.n_capacity_dimensions) {
@@ -263,9 +266,14 @@
    node.time_dim.departure_forward         = node.time_dim.window_start;
    node.time_dim.departure_backward        = node.time_dim.window_end;
    node.time_dim.latest_arrival_forward    = latest;
-   node.time_dim.earliest_arrival_backward = earliest;
- 
-   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
+  node.time_dim.earliest_arrival_backward = earliest;
+  node.time_dim.debug_node_id             = node_info.node();  // Set debug ID for depot
+  node.time_dim.is_soft_node              = false;  // Depots are always STRICT
+  
+  printf("🏗️ CREATE_DEPOT[%d]: is_soft_node=FALSE, window=[%.1f,%.1f], vehicle_id=%d\n", 
+         node_info.node(), earliest, latest, vehicle_id);
+
+  constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
      if (i < node.capacity_dim.n_capacity_dimensions) { node.capacity_dim.demand[i] = 0; }
    });
  
@@ -299,9 +307,14 @@
    node.time_dim.departure_forward         = node.time_dim.window_start;
    node.time_dim.departure_backward        = node.time_dim.window_end;
    node.time_dim.latest_arrival_forward    = latest;
-   node.time_dim.earliest_arrival_backward = earliest;
- 
-   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
+  node.time_dim.earliest_arrival_backward = earliest;
+  node.time_dim.debug_node_id             = node_info.node();  // Set debug ID for depot
+  node.time_dim.is_soft_node              = false;  // Depots are always STRICT
+  
+  printf("🏗️ CREATE_DEPOT[%d]: is_soft_node=FALSE, window=[%.1f,%.1f], vehicle_id=%d\n", 
+         node_info.node(), earliest, latest, vehicle_id);
+
+  constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
      if (i < node.capacity_dim.n_capacity_dimensions) { node.capacity_dim.demand[i] = 0; }
    });
  

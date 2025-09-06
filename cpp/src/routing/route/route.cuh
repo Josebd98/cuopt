@@ -761,6 +761,13 @@ class route_t {
       while (start < end) {
         auto next_node = curr_route.get_node(start + 1);
         curr_node.calculate_forward_all(next_node, curr_route.vehicle_info());
+        
+        // DEBUG: Print values just before saving
+        if (threadIdx.x == 0) {
+          printf("🔄 BEFORE_SAVE[%d]: excess_forward=%.2f, soft_excess_forward=%.2f\n", 
+                 start + 1, next_node.time_dim.excess_forward, next_node.time_dim.soft_excess_forward);
+        }
+        
         curr_route.set_forward_data(start + 1, next_node);
         curr_node = next_node;
         ++start;
