@@ -857,11 +857,11 @@ TEST_F(SoftTimeWindowsTest, SimpleTestWithGuaranteedSoftViolations) {
   };
   std::vector<float> objective_weights = {1.0f, 1.0f};
   
-  rmm::device_uvector<cuopt::routing::objective_t> d_objectives(2, handle->get_stream());
-  rmm::device_uvector<float> d_obj_weights(2, handle->get_stream());
-  raft::copy(d_objectives.data(), objectives.data(), 2, handle->get_stream());
-  raft::copy(d_obj_weights.data(), objective_weights.data(), 2, handle->get_stream());
-  data_model.set_objective_function(d_objectives.data(), d_obj_weights.data(), 2);
+  rmm::device_uvector<cuopt::routing::objective_t> d_objectives(3, handle->get_stream());
+  rmm::device_uvector<float> d_obj_weights(3, handle->get_stream());
+  raft::copy(d_objectives.data(), objectives.data(), 3, handle->get_stream());
+  raft::copy(d_obj_weights.data(), objective_weights.data(), 3, handle->get_stream());
+  data_model.set_objective_function(d_objectives.data(), d_obj_weights.data(), 3);
 
   // Solver settings
   cuopt::routing::solver_settings_t<int, float> solver_settings;
@@ -1016,7 +1016,7 @@ TEST_F(SoftTimeWindowsTest, ComplexRoutingDecisions)
 
   // Setup data model using internal API
   const int n_locations = 6;  // depot + 5 orders
-  const int n_vehicles = 1;
+  const int n_vehicles = 2;   // 2 vehicles to test distribution
   const int n_orders = 5;
   
   cuopt::routing::data_model_view_t<int, float> data_model(
@@ -1056,6 +1056,13 @@ TEST_F(SoftTimeWindowsTest, ComplexRoutingDecisions)
   
   data_model.set_order_time_windows(d_earliest.data(), d_latest.data());
 
+  // Set up service times (2 minutes per order)
+  std::vector<int> service_times(n_orders, 2);  // 2 minutes service time for each order
+  rmm::device_uvector<int> d_service_times(n_orders, handle->get_stream());
+  raft::copy(d_service_times.data(), service_times.data(), n_orders, handle->get_stream());
+  
+  data_model.set_order_service_times(d_service_times.data(), -1);  // -1 = default for all vehicles
+
   // Set up soft time windows
   std::vector<uint8_t> soft_tw_types_uint8 = {1, 0, 1, 0, 1};  // SOFT-STRICT-SOFT-STRICT-SOFT
   std::vector<float> soft_tw_penalties_float = {100.0f, 0.0f, 200.0f, 0.0f, 150.0f};
@@ -1068,23 +1075,42 @@ TEST_F(SoftTimeWindowsTest, ComplexRoutingDecisions)
   
   data_model.set_soft_time_windows(d_types.data(), d_penalties.data());
 
-  // Configure objectives INCLUDING soft time window penalties
+  // Set up vehicle capacities (both vehicles can handle all orders)
+  std::vector<int> order_demands(n_orders, 1);  // Each order demands 1 unit
+  std::vector<int> vehicle_capacities = {5, 5};  // Both vehicles can carry 5 units (all orders)
+  
+  rmm::device_uvector<int> d_vehicle_capacities(n_vehicles, handle->get_stream());
+  rmm::device_uvector<int> d_order_demands(n_orders, handle->get_stream());
+  
+  raft::copy(d_vehicle_capacities.data(), vehicle_capacities.data(), n_vehicles, handle->get_stream());
+  raft::copy(d_order_demands.data(), order_demands.data(), n_orders, handle->get_stream());
+  
+  data_model.add_capacity_dimension("capacity", d_order_demands.data(), d_vehicle_capacities.data());
+  
+  // Configure vehicle fixed costs - each vehicle has a fixed cost of 100 units
+  std::vector<float> vehicle_fixed_costs(n_vehicles, 20.0f);
+  rmm::device_uvector<float> d_vehicle_fixed_costs(n_vehicles, handle->get_stream());
+  raft::copy(d_vehicle_fixed_costs.data(), vehicle_fixed_costs.data(), n_vehicles, handle->get_stream());
+  data_model.set_vehicle_fixed_costs(d_vehicle_fixed_costs.data());
+
+  // Configure objectives INCLUDING soft time window penalties AND vehicle fixed cost
   std::vector<cuopt::routing::objective_t> objectives = {
     cuopt::routing::objective_t::COST,
-    cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY
+    cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY,
+    cuopt::routing::objective_t::VEHICLE_FIXED_COST
   };
-  std::vector<float> objective_weights = {1.0f, 1.0f};  // Equal weights
+  std::vector<float> objective_weights = {1.0f, 1000.0f, 50.0f};  // MASSIVE weight for soft penalties to prevent consolidation
   
-  rmm::device_uvector<cuopt::routing::objective_t> d_objectives(2, handle->get_stream());
-  rmm::device_uvector<float> d_obj_weights(2, handle->get_stream());
-  raft::copy(d_objectives.data(), objectives.data(), 2, handle->get_stream());
-  raft::copy(d_obj_weights.data(), objective_weights.data(), 2, handle->get_stream());
+  rmm::device_uvector<cuopt::routing::objective_t> d_objectives(3, handle->get_stream());
+  rmm::device_uvector<float> d_obj_weights(3, handle->get_stream());
+  raft::copy(d_objectives.data(), objectives.data(), 3, handle->get_stream());
+  raft::copy(d_obj_weights.data(), objective_weights.data(), 3, handle->get_stream());
   
-  data_model.set_objective_function(d_objectives.data(), d_obj_weights.data(), 2);
+  data_model.set_objective_function(d_objectives.data(), d_obj_weights.data(), 3);
 
   // Configure solver settings
   cuopt::routing::solver_settings_t<int, float> settings;
-  settings.set_time_limit(1);  // Give enough time for complex routing
+  settings.set_time_limit(2);  // Give enough time for complex routing
 
   std::cout << "\n🚀 === EJECUTANDO SOLVER COMPLEJO ===" << std::endl;
   std::cout << "- 5 órdenes: SOFT-STRICT-SOFT-STRICT-SOFT" << std::endl;
@@ -1159,6 +1185,8 @@ TEST_F(SoftTimeWindowsTest, ComplexRoutingDecisions)
     std::cout << "- n_locations=" << n_locations << ", n_orders=" << n_orders << ", n_vehicles=" << n_vehicles << std::endl;
     std::cout << "- order_locations configuradas: {1, 2, 3, 4, 5}" << std::endl;
     std::cout << "- depot location: 0" << std::endl;
+    std::cout << "- vehicle_capacities: {5, 5} (ambos pueden manejar todas las órdenes)" << std::endl;
+    std::cout << "- service_times: 2 minutos por orden" << std::endl;
     
     for (size_t i = 0; i < h_routes.size(); i++) {
       int node = h_routes[i];
@@ -1168,7 +1196,7 @@ TEST_F(SoftTimeWindowsTest, ComplexRoutingDecisions)
       int truck = (i < truck_id_host.size()) ? truck_id_host[i] : -1;
       
       std::cout << "\nPaso " << (i+1) << ": Node=" << node << ", Location=" << location 
-                << ", Type=" << node_type << ", Truck=" << truck << ", Arrival=" << arrival_time;
+                << ", Type=" << node_type << ", 🚛Truck=" << truck << ", Arrival=" << arrival_time;
       
       // INTERPRETACIÓN CORRECTA: Solo primer y último 0 son DEPOT
       if (node == 0 && (i == 0 || i == h_routes.size() - 1)) {
@@ -1231,7 +1259,29 @@ TEST_F(SoftTimeWindowsTest, ComplexRoutingDecisions)
       }
     }
     
-    std::cout << "\n📊 RESUMEN DEL BUG:" << std::endl;
+    // Análisis de distribución entre vehículos
+    std::cout << "\n🚛 === DISTRIBUCIÓN ENTRE VEHÍCULOS ===" << std::endl;
+    std::map<int, std::vector<int>> vehicle_orders;
+    for (size_t i = 0; i < h_routes.size(); i++) {
+      int node = h_routes[i];
+      int truck = (i < truck_id_host.size()) ? truck_id_host[i] : -1;
+      if (!(node == 0 && (i == 0 || i == h_routes.size() - 1)) && node >= 0 && node <= 4) {
+        vehicle_orders[truck].push_back(node);
+      }
+    }
+    
+    for (auto& pair : vehicle_orders) {
+      int truck_id = pair.first;
+      auto& orders = pair.second;
+      std::cout << "🚛 Vehículo " << truck_id << " maneja " << orders.size() << " órdenes: {";
+      for (size_t j = 0; j < orders.size(); j++) {
+        std::cout << "ORDER_" << orders[j];
+        if (j < orders.size() - 1) std::cout << ", ";
+      }
+      std::cout << "}" << std::endl;
+    }
+
+    std::cout << "\n📊 RESUMEN DEL ALGORITMO:" << std::endl;
     std::cout << "- Solver Status: " << routing_solution.get_status_string() << std::endl;
     std::cout << "- STRICT violations en solución final: " << strict_violations << std::endl;
     std::cout << "- Tiempo total de violaciones STRICT: " << total_strict_violation_time << "min" << std::endl;

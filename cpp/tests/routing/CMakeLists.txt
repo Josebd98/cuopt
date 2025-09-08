@@ -14,6 +14,8 @@
 # limitations under the License.
 
 ConfigureTest(SOFT_WINDOWS_TEST  ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/soft_time_windows_test.cu)
+ConfigureTest(SC25_TEST  ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/sc25_test.cu)
+ConfigureTest(SC25_SIMPLE_TEST  ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/sc25_test_simple.cu)
 
 ConfigureTest(ROUTING_TEST ${CMAKE_CURRENT_SOURCE_DIR}/level0/l0_routing_test.cu)
 ConfigureTest(ROUTING_GES_TEST ${CMAKE_CURRENT_SOURCE_DIR}/level0/l0_ges_test.cu)
