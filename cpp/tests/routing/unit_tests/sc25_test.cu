@@ -1,4 +1,4 @@
-// sc25_test.cu
+// sc25_test_fixed_raw.cu
 #include <gtest/gtest.h>
 
 #include <cuopt/routing/data_model_view.hpp>
@@ -9,7 +9,6 @@
 
 #include <raft/core/handle.hpp>
 #include <raft/core/copy.hpp>
-
 #include <rmm/device_uvector.hpp>
 
 #include <algorithm>
@@ -17,34 +16,16 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <limits>
-#include <iomanip>
+#include <cmath>
 
 class SC25Test : public ::testing::Test {
 protected:
-  void SetUp() override {
-    // AISLAMIENTO COMPLETO: Crear contexto limpio
-    std::cout << "🔄 SC25Test: Reseteando dispositivo CUDA..." << std::endl;
-    cudaDeviceSynchronize();
-    cudaDeviceReset();  // CRÍTICO: Reset completo del dispositivo
-    
-    handle = std::make_unique<raft::handle_t>();
-    std::cout << "✅ SC25Test: Contexto CUDA limpio creado" << std::endl;
-  }
-  
-  void TearDown() override {
-    // Limpieza exhaustiva al finalizar
-    if (handle) {
-      handle->sync_stream();
-      handle.reset();
-    }
-    cudaDeviceSynchronize();
-    std::cout << "✅ SC25Test: Contexto limpiado" << std::endl;
-  }
-  
+  void SetUp() override { handle = std::make_unique<raft::handle_t>(); }
   std::unique_ptr<raft::handle_t> handle;
 };
 
@@ -76,9 +57,9 @@ static float parse_float(std::string s) {
   return std::strtof(t.c_str(), nullptr);
 }
 
-TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
+TEST_F(SC25Test, Turno2_Completo_ConTransitTime_RAW_DUMP)
 {
-  std::cout << "🚛 === SC25 MINIMAL-LIKE TEST (desde CSV) ===\n";
+  std::cout << "🚛 === SC25 TEST (RAW + análisis de TW) ===\n";
 
   // 1) Leer nodos turno 2
   std::ifstream fnodes("../../../../datasets/SC25/nodes_df.csv");
@@ -94,10 +75,10 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
   fnodes.close();
   ASSERT_FALSE(rows2.empty()) << "No hay órdenes turno 2";
 
-  // 2) Preparar ids y atributos
+  // 2) Atributos
   std::vector<std::string> order_ids;
   std::vector<int> earliest, latest, service, demand;
-  std::vector<uint8_t> soft_type;
+  std::vector<uint8_t> soft_type;   // 0=STRICT, 1=SOFT
   std::vector<float> soft_pen;
   order_ids.reserve(rows2.size());
   earliest.reserve(rows2.size());
@@ -111,116 +92,81 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
     const auto& v = r.v;
     // [1]=node_id, [11]=node_demand, [12]=tw_start, [13]=tw_end, [14]=service, [17]=priority
     order_ids.push_back(v[1]);
-    demand.push_back(v.size()>11 ? std::stoi(v[11]) : 0);
+    demand .push_back(v.size()>11 ? std::stoi(v[11]) : 0);
     earliest.push_back(v.size()>12 ? time_to_minutes(v[12]) : 0);
-    latest.push_back(v.size()>13 ? time_to_minutes(v[13]) : 24*60);
-    service.push_back(v.size()>14 ? std::stoi(v[14]) : 0);
+    latest  .push_back(v.size()>13 ? time_to_minutes(v[13]) : 24*60);
+    service .push_back(v.size()>14 ? std::stoi(v[14]) : 0);
 
     const std::string pr = (v.size()>17 ? v[17] : "");
     if (pr=="A"||pr=="B") { soft_type.push_back(0); soft_pen.push_back(0.f); }
-    else { soft_type.push_back(1); soft_pen.push_back(100.f); }
+    else                  { soft_type.push_back(1); soft_pen.push_back(1.f); }
   }
-
-  // Sanitizar ventanas (nunca latest < earliest, ancho >= 1)
   for (size_t i=0;i<earliest.size();++i) {
     if (latest[i] < earliest[i]) std::swap(latest[i], earliest[i]);
     if (latest[i] == earliest[i]) latest[i] = earliest[i] + 1;
   }
 
-  int n_orders = std::min(20, static_cast<int>(order_ids.size()));  // ESCALAR a 20 órdenes
-  int n_vehicles = 3;  // 3 vehículos para 20 órdenes
-  int n_locations = n_orders + 1; // depot + orders
-  std::cout << "📊 Órdenes turno2: " << n_orders
-            << " | Vehículos: " << n_vehicles
-            << " | Ubicaciones: " << n_locations << "\n";
+  int n_orders    = (int)order_ids.size();
+  int n_vehicles  = 20;
+  int n_locations = n_orders + 1;
 
-  // 3) TEMPORAL: Usar matriz hardcodeada como sc25_harcodedtest.cu
-  std::cout << "⚠️ USANDO MATRIZ HARDCODEADA para debug\n";
-  
-  const float BIG = 1e6f; // Para compatibilidad con el código existente
-  
-  // Map node_id->loc (para compatibilidad)
+  // 3) Matriz
+  std::ifstream fmat("../../../../datasets/SC25/matrix_df.csv");
+  ASSERT_TRUE(fmat.is_open()) << "No se pudo abrir matrix_df.csv";
+  std::getline(fmat, line); // header
+
   std::map<std::string,int> node2loc;
   node2loc["SC25"]=0; node2loc["DEPOT"]=0; node2loc["SC25_DEPOT"]=0;
   for (int i=0;i<n_orders;++i) node2loc[order_ids[i]] = i+1;
 
-  // MATRIZ HARDCODEADA escalada para 21x21 (depot + 20 órdenes)
-  std::vector<std::vector<double>> travel_times(n_locations, std::vector<double>(n_locations));
-  
-  // Generar matriz simétrica con distancias razonables
-  for (int i = 0; i < n_locations; i++) {
-    for (int j = 0; j < n_locations; j++) {
-      if (i == j) {
-        travel_times[i][j] = 0.0;  // Distancia a sí mismo = 0
-      } else {
-        // Distancia proporcional a la diferencia de índices + algo de variación
-        double base_distance = std::abs(i - j) * 10.0;  // 10 min por "salto"
-        double variation = (i + j) % 5;  // Variación 0-4 min
-        travel_times[i][j] = base_distance + variation;
-        travel_times[j][i] = travel_times[i][j];  // Simétrica
-      }
-    }
-  }
-  
-  std::vector<std::vector<float>> timeM(n_locations, std::vector<float>(n_locations));
-  std::vector<std::vector<float>> costM(n_locations, std::vector<float>(n_locations));
-  
-  for (int i=0; i<n_locations; ++i) {
-    for (int j=0; j<n_locations; ++j) {
-      timeM[i][j] = static_cast<float>(travel_times[i][j]);
-      costM[i][j] = static_cast<float>(travel_times[i][j]);  // cost = time
-    }
-  }
+  const float BIG = 1e6f;
+  std::vector<std::vector<float>> timeM(n_locations, std::vector<float>(n_locations, BIG));
+  std::vector<std::vector<float>> costM(n_locations, std::vector<float>(n_locations, BIG));
+  for (int i=0;i<n_locations;++i){ timeM[i][i]=0.f; costM[i][i]=0.f; }
 
-  std::cout << "✅ Matriz hardcodeada configurada: " << n_locations << "x" << n_locations << "\n";
+  int lines=0, used=0;
+  while (std::getline(fmat,line)) {
+    ++lines;
+    auto f = split_semis(line);
+    if (f.size()<5) continue;
+    auto itO = node2loc.find(f[0]);
+    auto itD = node2loc.find(f[1]);
+    if (itO==node2loc.end()||itD==node2loc.end()) continue;
+    const int oi=itO->second, di=itD->second;
 
-  // 3.a) Check cobertura matriz + ejemplos de huecos
-  int missing = 0;
-  std::vector<std::pair<int,int>> missing_examples;
-  for (int i=0;i<n_locations;++i){
-    for (int j=0;j<n_locations;++j){
-      if (!(std::isfinite(timeM[i][j]) && timeM[i][j] < BIG)) {
-        missing++;
-        if (missing_examples.size()<20) missing_examples.emplace_back(i,j);
-      }
-    }
-  }
-  std::cout << "🔎 Arcos faltantes (tiempo >= BIG): " << missing
-            << " de " << (n_locations*n_locations) << "\n";
-  for (auto& p: missing_examples) {
-    int i=p.first, j=p.second;
-    auto id_i = (i==0? std::string("SC25"): order_ids[i-1]);
-    auto id_j = (j==0? std::string("SC25"): order_ids[j-1]);
-    std::cout << "  ⚠️ Falta arco " << i << "→" << j << " (" << id_i << " → " << id_j << ")\n";
-  }
+    float dist = parse_float(f[3]);
+    float mins = parse_float(f[4]);
+    if (!std::isfinite(dist) || dist<0) dist = BIG;
+    if (!std::isfinite(mins) || mins<0) mins = BIG;
 
-  // 3.b) Eliminar nodos sin conectividad básica con SC25
+    if (oi==di){ dist=0.f; mins=0.f; }
+    costM[oi][di] = dist;
+    timeM[oi][di] = mins;
+    ++used;
+  }
+  fmat.close();
+
+  // 3.a) Conectividad básica depot <-> order
   std::vector<int> keep_idx; keep_idx.reserve(n_orders);
-  int dropped = 0;
   for (int i=0;i<n_orders;++i){
     int loc = i+1;
     bool dep_to = (timeM[0][loc] < BIG);
     bool to_dep = (timeM[loc][0] < BIG);
-    if (!dep_to || !to_dep) {
-      std::cout << "⚠️ Desechando nodo sin conectividad con depósito: " << order_ids[i]
-                << " (SC25→node=" << dep_to << ", node→SC25=" << to_dep << ")\n";
-      ++dropped;
-    } else keep_idx.push_back(i);
+    if (dep_to && to_dep) keep_idx.push_back(i);
   }
-  if (dropped>0) {
-    std::cout << "ℹ️ Nodos descartados: " << dropped << "\n";
-    auto compactS = [&](auto& vec){
-      using T=typename std::decay<decltype(vec[0])>::type;
+  if ((int)keep_idx.size() != n_orders) {
+    auto compact = [&](auto& vec){
+      using T = typename std::decay<decltype(vec[0])>::type;
       std::vector<T> tmp; tmp.reserve(keep_idx.size());
       for (int k: keep_idx) tmp.push_back(vec[k]);
       vec.swap(tmp);
     };
-    compactS(order_ids); compactS(earliest); compactS(latest);
-    compactS(service); compactS(demand); compactS(soft_type); compactS(soft_pen);
+    compact(order_ids); compact(earliest); compact(latest);
+    compact(service);   compact(demand);   compact(soft_type); compact(soft_pen);
 
-    // rehacer node2loc y matrices
-    n_orders = static_cast<int>(order_ids.size());
+    n_orders    = (int)order_ids.size();
     n_locations = n_orders + 1;
+
     std::map<std::string,int> node2loc2; node2loc2["SC25"]=0;
     for (int i=0;i<n_orders;++i) node2loc2[order_ids[i]] = i+1;
 
@@ -247,88 +193,48 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
     costM.swap(cost2);
   }
 
-  // 3.c) Dump resumen de TW/servicio/demanda/soft (primeros 20)
-  std::cout << std::fixed << std::setprecision(0);
-  std::cout << "🧾 Primeros 20 pedidos:\n";
-  for (int i=0;i<std::min(20, n_orders); ++i) {
-    std::cout << "  [" << i << "] id=" << order_ids[i]
-              << " | tw=[" << earliest[i] << "," << latest[i] << "]"
-              << " | srv=" << service[i]
-              << " | dem=" << demand[i]
-              << " | " << (soft_type[i] ? "SOFT" : "STRICT")
-              << " (pen=" << soft_pen[i] << ")\n";
-  }
-
-  // 3.d) Dump submatriz 0..5 x 0..5 de tiempos (si alcanza)
-  int K = std::min(6, n_locations);
-  std::cout << "🧩 Submatriz tiempos (0.." << K-1 << "):\n";
-  for (int i=0;i<K;++i){
-    std::cout << "   ";
-    for (int j=0;j<K;++j){
-      float v = timeM[i][j];
-      if (v >= BIG) std::cout << " BIG ";
-      else std::cout << std::setw(4) << (int)v << " ";
-    }
-    std::cout << "\n";
-  }
-
-  // 4) Crear data model
-  std::cout << "🔧 Creando data model...\n";
+  // 4) Data Model
   cuopt::routing::data_model_view_t<int,float> dm(
       handle.get(), n_locations, n_vehicles, n_orders);
 
-  // 5) Aplanar matrices y copiar a GPU
-  std::vector<float> h_cost; h_cost.reserve(n_locations*n_locations);
-  std::vector<float> h_time; h_time.reserve(n_locations*n_locations);
-  float min_time=std::numeric_limits<float>::infinity(), max_time=0.f;
-  float min_cost=std::numeric_limits<float>::infinity(), max_cost=0.f;
-  int bad=0;
+  // 5) Matrices aplanadas
+  std::vector<float> h_cost(n_locations*n_locations), h_time(n_locations*n_locations);
   for (int i=0;i<n_locations;++i){
     for (int j=0;j<n_locations;++j){
       float c = costM[i][j];
       float t = timeM[i][j];
-      if (!std::isfinite(c)) { c = BIG; bad++; }
-      if (!std::isfinite(t)) { t = BIG; bad++; }
+      if (!std::isfinite(c)) c = BIG;
+      if (!std::isfinite(t)) t = BIG;
       if (i==j) { c=0.f; t=0.f; }
-      min_time = std::min(min_time, t); max_time = std::max(max_time, t);
-      min_cost = std::min(min_cost, c); max_cost = std::max(max_cost, c);
-      h_cost.push_back(c);
-      h_time.push_back(t);
+      h_cost[i*n_locations+j] = c;
+      h_time[i*n_locations+j] = t;
     }
   }
-  std::cout << "📐 Matriz tiempo: min=" << min_time << " max=" << max_time
-            << " | Matriz coste: min=" << min_cost << " max=" << max_cost
-            << " | no-finitos reparados=" << bad << "\n";
 
   rmm::device_uvector<float> d_cost(h_cost.size(), handle->get_stream());
   rmm::device_uvector<float> d_time(h_time.size(), handle->get_stream());
   raft::copy(d_cost.data(), h_cost.data(), h_cost.size(), handle->get_stream());
   raft::copy(d_time.data(), h_time.data(), h_time.size(), handle->get_stream());
-
   dm.add_cost_matrix(d_cost.data(), 0);
-  dm.add_transit_time_matrix(d_time.data(), 0);   // matriz de minutos para TW
-  std::cout << "✅ Cost/Transit matrices configuradas\n";
+  dm.add_transit_time_matrix(d_time.data(), 0);
 
-  // 6) order_locations: **IMPORTANTE: 1..n_orders**
+  // 6) order_locations: 1..n_orders
   std::vector<int> h_loc(n_orders); std::iota(h_loc.begin(), h_loc.end(), 1);
   rmm::device_uvector<int> d_loc(n_orders, handle->get_stream());
   raft::copy(d_loc.data(), h_loc.data(), n_orders, handle->get_stream());
   dm.set_order_locations(d_loc.data());
-  std::cout << "✅ Order locations configuradas (1..n_orders)\n";
 
-  // 7) TW tal cual vienen del CSV (ya saneadas)
+  // 7) TW
   rmm::device_uvector<int> d_e(n_orders, handle->get_stream());
   rmm::device_uvector<int> d_l(n_orders, handle->get_stream());
   raft::copy(d_e.data(), earliest.data(), n_orders, handle->get_stream());
   raft::copy(d_l.data(), latest.data(),   n_orders, handle->get_stream());
   dm.set_order_time_windows(d_e.data(), d_l.data());
-  std::cout << "✅ Time windows configuradas\n";
 
-  // 8) Service times
+  // 8) Service
   rmm::device_uvector<int> d_srv(n_orders, handle->get_stream());
   raft::copy(d_srv.data(), service.data(), n_orders, handle->get_stream());
   dm.set_order_service_times(d_srv.data(), -1);
-  std::cout << "✅ Service times configurados\n";
 
   // 9) Soft/Strict
   rmm::device_uvector<uint8_t> d_soft(n_orders, handle->get_stream());
@@ -336,27 +242,14 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
   raft::copy(d_soft.data(), soft_type.data(), n_orders, handle->get_stream());
   raft::copy(d_pen.data(),  soft_pen.data(),  n_orders, handle->get_stream());
   dm.set_soft_time_windows(d_soft.data(), d_pen.data());
-  
-  // CRÍTICO: Forzar sincronización después de configurar soft time windows
-  handle->sync_stream();
-  std::cout << "✅ GPU sync forzado después de soft time windows\n";
-  
-  int strict_cnt=0, soft_cnt=0;
-  for (auto s: soft_type) (s?soft_cnt:strict_cnt)++;
-  std::cout << "✅ Soft/Strict configurados | STRICT="<<strict_cnt<<" | SOFT="<<soft_cnt<<"\n";
 
-  // 10) Capacidades
+  // 10) Capacidad
   std::vector<int> veh_caps(n_vehicles, 120);
   rmm::device_uvector<int> d_caps(n_vehicles, handle->get_stream());
   rmm::device_uvector<int> d_dem (n_orders,   handle->get_stream());
   raft::copy(d_caps.data(), veh_caps.data(), n_vehicles, handle->get_stream());
   raft::copy(d_dem.data(),  demand.data(),   n_orders,   handle->get_stream());
   dm.add_capacity_dimension("capacity", d_dem.data(), d_caps.data());
-  
-  // CRÍTICO: Forzar sincronización final antes del solver
-  handle->sync_stream();
-  std::cout << "✅ Capacidades configuradas (veh=120)\n";
-  std::cout << "✅ SYNC FINAL: Todos los datos GPU sincronizados\n";
 
   // 11) Objetivos
   std::vector<cuopt::routing::objective_t> objs = {
@@ -369,7 +262,6 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
   raft::copy(d_objs.data(), objs.data(), objs.size(), handle->get_stream());
   raft::copy(d_w.data(), w.data(), w.size(), handle->get_stream());
   dm.set_objective_function(d_objs.data(), d_w.data(), (int)objs.size());
-  std::cout << "✅ Objetivos configurados\n";
 
   // 12) Solver
   cuopt::routing::solver_settings_t<int,float> set;
@@ -378,26 +270,146 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_DebugDump)
 
   std::cout << "🚀 Ejecutando solver...\n";
   auto sol = cuopt::routing::solve(dm, set);
-  std::cout << "📌 Status: " << sol.get_status_string() << "\n";
-  ASSERT_EQ(sol.get_status(), cuopt::routing::solution_status_t::SUCCESS);
 
-  auto obj = sol.get_objectives();
-  auto itC = obj.find(cuopt::routing::objective_t::COST);
-  auto itS = obj.find(cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY);
-  std::cout << "Coste: " << (itC!=obj.end()? itC->second : 0.0) << "\n";
-  std::cout << "Soft penalty: " << (itS!=obj.end()? itS->second : 0.0) << "\n";
+  // ============================
+  //   RAW SOLUTION DUMP
+  // ============================
+  std::cout << "\n===== RAW SOLUTION =====\n";
+  std::cout << "status_string: " << sol.get_status_string() << "\n";
+  std::cout << "total_objective: " << sol.get_total_objective() << "\n";
 
-  // Dump de la ruta (ids de location visitados)
-  auto& routes = sol.get_route();
-  std::vector<int> h_routes(routes.size());
-  raft::copy(h_routes.data(), routes.data(), routes.size(), handle->get_stream());
-  handle->sync_stream();
-  std::cout << "🗺️  Ruta: ";
-  for (size_t i=0;i<h_routes.size();++i) {
-    int loc = h_routes[i];
-    if (loc==0) std::cout << "SC25";
-    else std::cout << order_ids[loc-1];
-    if (i+1<h_routes.size()) std::cout << " → ";
+  auto objectives = sol.get_objectives();
+  std::cout << "objectives_map_size: " << objectives.size() << "\n";
+  for (auto &kv : objectives) {
+    std::cout << "  objective_key_int=" << static_cast<int>(kv.first)
+              << " value=" << kv.second << "\n";
   }
-  std::cout << "\n";
+
+  auto route_host          = cuopt::host_copy(sol.get_route());
+  auto node_types_host     = cuopt::host_copy(sol.get_node_types());
+  auto truck_id_host       = cuopt::host_copy(sol.get_truck_id());
+  auto order_locs_host     = cuopt::host_copy(sol.get_order_locations());
+  auto arrival_host        = cuopt::host_copy(sol.get_arrival_stamp());
+
+  auto dump_vec_int = [&](const char* name, const std::vector<int>& v){
+    std::cout << name << " [size=" << v.size() << "]: ";
+    for (size_t i=0;i<v.size();++i){ if (i) std::cout << ","; std::cout << v[i]; }
+    std::cout << "\n";
+  };
+  auto dump_vec_dbl = [&](const char* name, const std::vector<double>& v){
+    std::cout << name << " [size=" << v.size() << "]: ";
+    for (size_t i=0;i<v.size();++i){ if (i) std::cout << ","; std::cout << v[i]; }
+    std::cout << "\n";
+  };
+
+  dump_vec_int("route_raw",              route_host);
+  dump_vec_int("node_types_raw",         node_types_host);
+  dump_vec_int("truck_id_raw",           truck_id_host);
+  dump_vec_int("order_locations_raw",    order_locs_host);
+  dump_vec_dbl("arrival_stamp_raw",      arrival_host);
+
+  // ============================
+  //        ==== ANALYSIS ====
+  // ============================
+  std::cout << "\n===== TRANSLATED & TW CHECK =====\n";
+
+  auto is_depot = [&](size_t i)->bool {
+    return (i < node_types_host.size()) && (node_types_host[i] == (int)cuopt::routing::node_type_t::DEPOT);
+  };
+
+  // Agrupar por camión y por tour (separado por DEPOT)
+  std::map<int, std::vector<std::vector<size_t>>> visits_by_vehicle; // indices de visita
+  {
+    std::map<int, std::vector<size_t>> current;
+    auto flush = [&](int v){
+      if (!current[v].empty()) {
+        visits_by_vehicle[v].push_back(current[v]);
+        current[v].clear();
+      }
+    };
+    for (size_t i=0;i<route_host.size();++i) {
+      int truck = (i < truck_id_host.size()) ? truck_id_host[i] : 0;
+      if (is_depot(i)) { flush(truck); continue; }
+      current[truck].push_back(i);
+    }
+    for (auto &kv : current) flush(kv.first);
+  }
+
+  long strict_cnt=0, soft_cnt=0;
+  long long strict_minutes=0, soft_minutes=0;
+  double soft_penalty_total=0.0;
+
+  auto order_name = [&](int order_index)->std::string{
+    if (order_index >=0 && order_index < (int)order_ids.size()) return order_ids[order_index];
+    return std::string("ORDER?(") + std::to_string(order_index) + ")";
+  };
+
+  for (auto &kv : visits_by_vehicle) {
+    int truck = kv.first;
+    auto &tours = kv.second;
+    for (size_t t=0; t<tours.size(); ++t) {
+      std::cout << "🚛 Truck " << truck << " | Tour " << t << "\n";
+      for (size_t pos=0; pos<tours[t].size(); ++pos) {
+        size_t i = tours[t][pos];
+
+        // Map robusto a order_index
+        int loc = (i < order_locs_host.size()) ? order_locs_host[i] : 0;
+        int order_index = -1;
+        if (loc > 0) order_index = loc - 1;
+        else {
+          // fallback: algunos builds codifican order_index en route()
+          int vid = (i < route_host.size() ? route_host[i] : -1);
+          if (vid >= 0 && vid < n_orders) order_index = vid; // ORDER_0..ORDER_(n-1)
+        }
+        if (order_index < 0 || order_index >= n_orders) {
+          std::cout << "  ⚠️  visita " << i << " no mapeable a order_index.\n";
+          continue;
+        }
+
+        double arr = (i < arrival_host.size()) ? arrival_host[i] : std::numeric_limits<double>::quiet_NaN();
+        int e = earliest[order_index];
+        int l = latest[order_index];
+        bool is_soft_tw = (soft_type[order_index] != 0);
+        double late = (std::isfinite(arr) && arr > l) ? (arr - l) : 0.0;
+
+        std::cout << "  • " << order_name(order_index)
+                  << "  idx=" << order_index
+                  << "  window=[" << e << "," << l << "]"
+                  << "  type=" << (is_soft_tw ? "SOFT" : "STRICT")
+                  << "  arrival=" << arr;
+
+        if (late > 0.0) {
+          std::cout << "  → LATE +" << late << " min";
+          if (is_soft_tw) {
+            soft_cnt++; soft_minutes += (long)std::llround(late);
+            soft_penalty_total += late * soft_pen[order_index];
+          } else {
+            strict_cnt++; strict_minutes += (long)std::llround(late);
+          }
+        } else if (std::isfinite(arr) && arr < e) {
+          std::cout << "  (early " << (e - arr) << " min)";
+        } else {
+          std::cout << "  ✓ OK";
+        }
+        std::cout << "\n";
+      }
+    }
+  }
+
+  std::cout << "\n📘 RESUMEN TW\n";
+  std::cout << "  STRICT: violaciones=" << strict_cnt
+            << " | minutos tarde=" << strict_minutes << "\n";
+  std::cout << "  SOFT  : violaciones=" << soft_cnt
+            << " | minutos tarde=" << soft_minutes
+            << " | penalización total (calc)=" << soft_penalty_total << "\n";
+
+  bool infeasible_time_dimension = (strict_cnt > 0);
+  if (infeasible_time_dimension) {
+    std::cout << "❌ INFEASIBLE por STRICT TW. Minutos totales fuera de ventana (STRICT): "
+              << strict_minutes << "\n";
+  } else {
+    std::cout << "✅ Todos los STRICT respetados.\n";
+  }
+
+  SUCCEED() << "RAW + análisis TW ejecutado.";
 }

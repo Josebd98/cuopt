@@ -28,9 +28,13 @@
  
  #include <rmm/device_uvector.hpp>
  
- namespace cuopt {
- namespace routing {
- namespace detail {
+namespace cuopt {
+namespace routing {
+namespace detail {
+
+// Variable global para el umbral de tolerancia SOFT
+// Se inicializa desde dimensions_info en el solver
+extern double g_soft_tolerance_minutes;
  
  template <typename i_t, typename f_t>
  class time_node_t {
@@ -68,53 +72,32 @@
      /*! \brief { Calculate next node forward time data based on actual node} */
   void HDI calculate_forward(time_node_t& next, double time_between) const noexcept
   {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("🔄 PROPAGATE: from_node=%d to_node=%d, time_between=%.2f\n", 
-             debug_node_id, next.debug_node_id, time_between);
-      printf("🔍 BEFORE: departure_forward=%.2f, excess_forward=%.2f, soft_excess_forward=%.2f\n",
-             departure_forward, excess_forward, soft_excess_forward);
-      printf("🔍 NEXT_BEFORE: departure_forward=%.2f, excess_forward=%.2f, soft_excess_forward=%.2f\n",
-             next.departure_forward, next.excess_forward, next.soft_excess_forward);
-    }
     
     next.departure_forward = departure_forward + time_between;
     next.excess_forward = excess_forward;
     next.soft_excess_forward = soft_excess_forward;
-    
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("🔄 CALCULATION: %.2f + %.2f = %.2f\n", 
-             departure_forward, time_between, next.departure_forward);
-      printf("🔍 AFTER: next.departure_forward=%.2f, next.excess_forward=%.2f, next.soft_excess_forward=%.2f\n",
-             next.departure_forward, next.excess_forward, next.soft_excess_forward);
-    }
 
     if (next.departure_forward < next.window_start) {
       next.departure_forward = next.window_start;
     } else if (next.departure_forward > next.window_end) {
       double violation = next.departure_forward - next.window_end;
       
-      // Direct violations to appropriate excess based on node type
-        if (threadIdx.x == 0 && blockIdx.x == 0) {
-          printf("🎯 VIOLATION DECISION: node_id=%d, arrival=%.2f, window=[%.1f,%.1f], is_soft_node=%s, violation=%.2f\n", 
-                 next.debug_node_id, next.departure_forward, next.window_start, next.window_end, 
-                 next.is_soft_node ? "TRUE" : "FALSE", violation);
-        }
+
         
         if (next.is_soft_node) {
-          next.soft_excess_forward += violation;
-          if (threadIdx.x == 0 && blockIdx.x == 0) {
-            printf("🔥 SOFT VIOLATION: node_id=%d, violation=%.2f, total_soft=%.2f (keeping real arrival=%.2f)\n", 
-                   next.debug_node_id, violation, next.soft_excess_forward, next.departure_forward);
+          // SOFT nodes con umbral de tolerancia configurable (desde variable global)
+          if (violation <= g_soft_tolerance_minutes) {
+            // Retraso tolerable: mantener como SOFT violation
+            next.soft_excess_forward += violation;
+            // For SOFT violations, keep the real arrival time for proper propagation
+          } else {
+            // Retraso excesivo: convertir a STRICT violation
+            next.excess_forward += violation;
+            // For excessive delays, treat as STRICT and adjust departure time
+            next.departure_forward = next.window_end;
           }
-          // For SOFT violations, keep the real arrival time for proper propagation
         } else {
           next.excess_forward += violation;
-          if (threadIdx.x == 0 && blockIdx.x == 0) {
-            printf("❌ STRICT VIOLATION: node_id=%d, violation=%.2f, total_strict=%.2f, arrival=%.2f, window=[%.1f,%.1f], is_soft_node=%s\n", 
-                   next.debug_node_id, violation, next.excess_forward, next.departure_forward, next.window_start, next.window_end, next.is_soft_node ? "TRUE" : "FALSE");
-            printf("🔍 STRICT DEBUG: BEFORE excess_forward=%.2f, AFTER excess_forward=%.2f\n", 
-                   excess_forward, next.excess_forward);
-          }
           // For STRICT violations, adjust departure time to window end
           next.departure_forward = next.window_end;
         }
@@ -136,19 +119,15 @@
   {
     prev.departure_backward = departure_backward - time_between;
     prev.excess_backward = excess_backward;
-    prev.soft_excess_backward = soft_excess_backward;
+    prev.soft_excess_backward = 0.0;  // Always 0 since backward violations are always STRICT
 
     if (prev.departure_backward > prev.window_end)
       prev.departure_backward = prev.window_end;
     else if (prev.departure_backward < prev.window_start) {
       double violation = prev.window_start - prev.departure_backward;
       
-      // Direct violations to appropriate excess based on node type
-      if (prev.is_soft_node) {
-        prev.soft_excess_backward += violation;
-      } else {
-        prev.excess_backward += violation;
-      }
+      // BACKWARD violations are ALWAYS STRICT (arriving early is always bad)
+      prev.excess_backward += violation;
       
       prev.departure_backward = prev.window_start;
     }
@@ -184,8 +163,6 @@
                      max(0.0, arrival_f - next.departure_backward) +
                      max(0.0, total_time - vehicle_info.max_time);
      
-     printf("🔗 COMBINE: prev_excess=%.2f, next_excess=%.2f, result=%.2f (prev_soft=%.2f, next_soft=%.2f)\n",
-            prev.excess_forward, next.excess_backward, result, prev.soft_excess_forward, next.soft_excess_backward);
      
      return result;
    }
@@ -208,10 +185,10 @@
   {
     double excess = forward_excess(vehicle_info);
     bool feasible = excess * weight <= excess_limit;
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("🔍 FORWARD_FEASIBLE[B%d.T%d]: excess=%.2f, weight=%.2f, limit=%.2f → %s (soft_excess=%.2f)\n",
-             blockIdx.x, threadIdx.x, excess, weight, excess_limit, feasible ? "FEASIBLE" : "INFEASIBLE", soft_excess_forward);
-    }
+    // if (threadIdx.x == 0 && blockIdx.x == 0) {
+      // printf("🔍 FORWARD_FEASIBLE[B%d.T%d]: excess=%.2f, weight=%.2f, limit=%.2f → %s (soft_excess=%.2f)\n",
+             // blockIdx.x, threadIdx.x, excess, weight, excess_limit, feasible ? "FEASIBLE" : "INFEASIBLE", soft_excess_forward);
+    // }
     return feasible;
   }
  
@@ -234,22 +211,12 @@
     inf_cost[dim_t::TIME] =
       (excess_forward + excess_backward + max(0., departure_forward - departure_backward));
       
-    // DEBUG: Print inf_cost calculation
-    if (threadIdx.x == 0) {
-      printf("💰 GET_COST[node=%d]: inf_cost[TIME]=%.2f (excess_fwd=%.2f, excess_bwd=%.2f, dep_diff=%.2f)\n",
-             node_id, inf_cost[dim_t::TIME], excess_forward, excess_backward, 
-             max(0., departure_forward - departure_backward));
-    }
+
       
     // SOFT time window violations go to obj_cost (penalty)
+    // NOTE: Only FORWARD violations can be SOFT, BACKWARD violations are always STRICT
     if (dim_info.has_soft_time_windows()) {
-      obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = 
-        (soft_excess_forward + soft_excess_backward);
-      if (threadIdx.x == 0) {
-        printf("💰 GET_COST[node=%d]: obj_cost[SOFT_PENALTY]=%.2f (soft_fwd=%.2f, soft_bwd=%.2f)\n",
-               node_id, obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY], 
-               soft_excess_forward, soft_excess_backward);
-      }
+      obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = soft_excess_forward;
     }
     
     if (dim_info.should_compute_travel_time()) {
