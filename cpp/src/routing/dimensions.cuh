@@ -207,7 +207,6 @@ struct time_dimension_info_t {
   // Soft time window data pointers (using void* for type flexibility)
   uint8_t const* soft_tw_types = nullptr;
   void const* soft_tw_penalties = nullptr;  // Will be cast to f_t* when used
-  double soft_to_hard_thresh = std::numeric_limits<double>::max();
 };
 
 struct capacity_dimension_info_t {
