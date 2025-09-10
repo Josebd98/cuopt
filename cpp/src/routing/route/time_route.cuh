@@ -291,18 +291,21 @@
       thrust::tie(v.window_end, sh_ptr)         = wrap_ptr_as_span<double>(sh_ptr, sz);
       thrust::tie(v.is_soft_node, sh_ptr)       = wrap_ptr_as_span<int>(sh_ptr, sz);
  
-       if (dim_info.should_compute_travel_time()) {
-         thrust::tie(v.transit_time_forward, sh_ptr)     = wrap_ptr_as_span<double>(sh_ptr, sz);
-         thrust::tie(v.latest_arrival_forward, sh_ptr)   = wrap_ptr_as_span<double>(sh_ptr, sz);
-         thrust::tie(v.unavoidable_wait_forward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
- 
-         thrust::tie(v.transit_time_backward, sh_ptr)     = wrap_ptr_as_span<double>(sh_ptr, sz);
-         thrust::tie(v.earliest_arrival_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
-         thrust::tie(v.unavoidable_wait_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
-       }
-       return thrust::make_tuple(v, sh_ptr);
-     }
- 
+      if (dim_info.should_compute_travel_time()) {
+        // ensure double arrays start at an 8-byte boundary after the int array
+        sh_ptr = reinterpret_cast<i_t*>(
+          raft::alignTo(reinterpret_cast<size_t>(sh_ptr), sizeof(double)));
+
+        thrust::tie(v.transit_time_forward, sh_ptr)     = wrap_ptr_as_span<double>(sh_ptr, sz);
+        thrust::tie(v.latest_arrival_forward, sh_ptr)   = wrap_ptr_as_span<double>(sh_ptr, sz);
+        thrust::tie(v.unavoidable_wait_forward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
+
+        thrust::tie(v.transit_time_backward, sh_ptr)     = wrap_ptr_as_span<double>(sh_ptr, sz);
+        thrust::tie(v.earliest_arrival_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
+        thrust::tie(v.unavoidable_wait_backward, sh_ptr) = wrap_ptr_as_span<double>(sh_ptr, sz);
+      }
+      return thrust::make_tuple(v, sh_ptr);
+    }
      time_dimension_info_t dim_info;
          raft::device_span<double> departure_forward;
     raft::device_span<double> excess_forward;
@@ -364,9 +367,14 @@
     */
    HDI static size_t get_shared_size(i_t route_size, time_dimension_info_t dim_info)
    {
-        // departure_forward, excess_forward, soft_excess_forward, departure_backward, 
+        // departure_forward, excess_forward, soft_excess_forward, departure_backward,
    // excess_backward, soft_excess_backward, window_start, window_end, is_soft_node
-   return (8 * sizeof(double) + 1 * sizeof(int) + 6 * dim_info.should_compute_travel_time() * sizeof(double)) * route_size;
+   size_t sz = (8 * sizeof(double) + sizeof(int)) * route_size;
+   if (dim_info.should_compute_travel_time()) {
+     sz = raft::alignTo(sz, sizeof(double));
+     sz += (6 * sizeof(double)) * route_size;
+   }
+   return sz;
    }
  
    time_dimension_info_t dim_info;

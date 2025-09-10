@@ -263,9 +263,10 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_RAW_DUMP)
   // 12) Objetivos
   std::vector<cuopt::routing::objective_t> objs = {
     cuopt::routing::objective_t::COST,
+    cuopt::routing::objective_t::TRAVEL_TIME,
     cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY
   };
-  std::vector<float> w = {1.f, 1.f};
+  std::vector<float> w = {1.f, 1.f, 1.f};
   rmm::device_uvector<cuopt::routing::objective_t> d_objs(objs.size(), handle->get_stream());
   rmm::device_uvector<float> d_w(w.size(), handle->get_stream());
   raft::copy(d_objs.data(), objs.data(), objs.size(), handle->get_stream());
