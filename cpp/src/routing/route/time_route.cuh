@@ -125,9 +125,9 @@
      time_node.is_soft_node       = (is_soft_node[idx] == 1);  // ← READ soft flag from array (int to bool)
      time_node.debug_node_id      = idx;  // Set debug ID for tracing
      
-     printf("🔧 GET_NODE[%d]: is_soft_node=%s (from array), window=[%.1f,%.1f]\n", 
-            idx, time_node.is_soft_node ? "TRUE" : "FALSE", 
-            time_node.window_start, time_node.window_end);
+     // printf("🔧 GET_NODE[%d]: is_soft_node=%s (from array), window=[%.1f,%.1f]\n", 
+            // idx, time_node.is_soft_node ? "TRUE" : "FALSE", 
+            // time_node.window_start, time_node.window_end);
       
       if (dim_info.should_compute_travel_time()) {
          time_node.transit_time_forward     = transit_time_forward[idx];
@@ -156,11 +156,7 @@
         excess_forward[idx]    = node.excess_forward;
         soft_excess_forward[idx] = node.soft_excess_forward;
         
-        // DEBUG: Print what we're setting (only from thread 0)
-        if (threadIdx.x == 0) {
-          printf("📝 SET_FORWARD_DATA[%d]: excess_forward=%.2f, soft_excess_forward=%.2f\n",
-                 idx, node.excess_forward, node.soft_excess_forward);
-        }
+
  
        if (dim_info.should_compute_travel_time()) {
          transit_time_forward[idx]     = node.transit_time_forward;
@@ -253,29 +249,15 @@
     {
       inf_cost[dim_t::TIME] = static_cast<double>(excess_forward[n_nodes_route]);
       
-      // DEBUG: Print route-level inf_cost
-      if (threadIdx.x == 0) {
-        printf("🛣️ ROUTE_GET_COST: inf_cost[TIME]=%.2f (accumulated excess_forward[%d])\n",
-               inf_cost[dim_t::TIME], n_nodes_route);
-      }
+
       
       // SOFT time window violations go to obj_cost (penalty)
       if (dim_info.has_soft_time_windows()) {
-        // DEBUG: Print ALL array values to see what's happening
-        if (threadIdx.x == 0) {
-          printf("🔍 ROUTE ARRAY DEBUG: n_nodes_route=%d\n", n_nodes_route);
-          for (i_t i = 0; i <= n_nodes_route; i++) {
-            printf("   [%d] excess_forward=%.2f, soft_excess_forward=%.2f\n", 
-                   i, static_cast<double>(excess_forward[i]), static_cast<double>(soft_excess_forward[i]));
-          }
-        }
+
         
         obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY] = 
           static_cast<double>(soft_excess_forward[n_nodes_route]);
-        if (threadIdx.x == 0) {
-          printf("🛣️ ROUTE_GET_COST: obj_cost[SOFT_PENALTY]=%.2f (only soft_excess_forward[%d])\n",
-                 obj_cost[objective_t::SOFT_TIME_WINDOW_PENALTY], n_nodes_route);
-        }
+
       }
 
       if (dim_info.should_compute_travel_time()) {
