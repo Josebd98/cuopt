@@ -123,6 +123,7 @@
      time_node.window_start       = window_start[idx];
      time_node.window_end         = window_end[idx];
      time_node.is_soft_node       = (is_soft_node[idx] == 1);  // ← READ soft flag from array (int to bool)
+     time_node.soft_to_hard_time_window_thresh = dim_info.soft_to_hard_time_window_thresh;
      time_node.debug_node_id      = idx;  // Set debug ID for tracing
      
      // printf("🔧 GET_NODE[%d]: is_soft_node=%s (from array), window=[%.1f,%.1f]\n", 

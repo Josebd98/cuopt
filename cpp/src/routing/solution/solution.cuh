@@ -96,10 +96,12 @@
   
    // Set soft time window flag if available
    if (problem.dimensions_info.time_dim.has_soft_time_windows() &&
-       problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
-     node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
-     
-   }
+      problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
+    node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
+
+  }
+  node.time_dim.soft_to_hard_time_window_thresh =
+    problem.dimensions_info.time_dim.soft_to_hard_time_window_thresh;
  
    constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
      if (i < node.capacity_dim.n_capacity_dimensions) {
@@ -175,6 +177,8 @@
       problem->dimensions_info.time_dim.soft_tw_types != nullptr) {
     node.time_dim.is_soft_node = (problem->dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
   }
+  node.time_dim.soft_to_hard_time_window_thresh =
+    problem->dimensions_info.time_dim.soft_to_hard_time_window_thresh;
  
    constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
      if (i < node.capacity_dim.n_capacity_dimensions) {
@@ -239,33 +243,35 @@
  }
  
  template <typename i_t, typename f_t, request_t REQUEST>
- DI node_t<i_t, f_t, REQUEST> create_depot_node(const typename problem_t<i_t, f_t>::view_t& problem,
-                                                const NodeInfo<i_t> node_info,
-                                                const NodeInfo<i_t> brother_info,
-                                                const i_t vehicle_id)
- {
-   node_t<i_t, f_t, REQUEST> node(problem.dimensions_info);
- 
-   cuopt_assert(node_info.is_depot(), "create_depot_node should be only called with depot nodes");
- 
-   double earliest =
-     !problem.order_info.depot_included
-       ? problem.fleet_info.earliest_time[vehicle_id]
-       : max(problem.order_info.earliest_time[DEPOT], problem.fleet_info.earliest_time[vehicle_id]);
- 
-   double latest =
-     !problem.order_info.depot_included
-       ? problem.fleet_info.latest_time[vehicle_id]
-       : min(problem.order_info.latest_time[DEPOT], problem.fleet_info.latest_time[vehicle_id]);
- 
-   node.time_dim.window_start              = earliest;
-   node.time_dim.window_end                = latest;
-   node.time_dim.departure_forward         = node.time_dim.window_start;
-   node.time_dim.departure_backward        = node.time_dim.window_end;
-   node.time_dim.latest_arrival_forward    = latest;
-  node.time_dim.earliest_arrival_backward = earliest;
-  node.time_dim.debug_node_id             = node_info.node();  // Set debug ID for depot
-  node.time_dim.is_soft_node              = false;  // Depots are always STRICT
+DI node_t<i_t, f_t, REQUEST> create_depot_node(const typename problem_t<i_t, f_t>::view_t& problem,
+                                               const NodeInfo<i_t> node_info,
+                                               const NodeInfo<i_t> brother_info,
+                                               const i_t vehicle_id)
+{
+  node_t<i_t, f_t, REQUEST> node(problem.dimensions_info);
+
+  cuopt_assert(node_info.is_depot(), "create_depot_node should be only called with depot nodes");
+
+  double earliest =
+    !problem.order_info.depot_included
+      ? problem.fleet_info.earliest_time[vehicle_id]
+      : max(problem.order_info.earliest_time[DEPOT], problem.fleet_info.earliest_time[vehicle_id]);
+
+  double latest =
+    !problem.order_info.depot_included
+      ? problem.fleet_info.latest_time[vehicle_id]
+      : min(problem.order_info.latest_time[DEPOT], problem.fleet_info.latest_time[vehicle_id]);
+
+  node.time_dim.window_start              = earliest;
+  node.time_dim.window_end                = latest;
+  node.time_dim.departure_forward         = node.time_dim.window_start;
+  node.time_dim.departure_backward        = node.time_dim.window_end;
+  node.time_dim.latest_arrival_forward    = latest;
+ node.time_dim.earliest_arrival_backward = earliest;
+ node.time_dim.debug_node_id             = node_info.node();  // Set debug ID for depot
+ node.time_dim.is_soft_node              = false;  // Depots are always STRICT
+ node.time_dim.soft_to_hard_time_window_thresh =
+   problem.dimensions_info.time_dim.soft_to_hard_time_window_thresh;
   
 
   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {
@@ -305,6 +311,8 @@
   node.time_dim.earliest_arrival_backward = earliest;
   node.time_dim.debug_node_id             = node_info.node();  // Set debug ID for depot
   node.time_dim.is_soft_node              = false;  // Depots are always STRICT
+  node.time_dim.soft_to_hard_time_window_thresh =
+    problem->dimensions_info.time_dim.soft_to_hard_time_window_thresh;
   
 
   constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {

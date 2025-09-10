@@ -291,16 +291,19 @@
  
      if (travel_time_obj_exists) { time_dim_info.has_travel_time_obj = true; }
      
-     if (soft_tw_penalty_obj_exists || soft_tw_exists) { 
-       time_dim_info.has_soft_tw_penalty_obj = true;
-       
-       // Configure soft time window data pointers
-       if (soft_tw_exists) {
-         time_dim_info.soft_tw_types = soft_tw_info.get_time_window_types();
-         time_dim_info.soft_tw_penalties = soft_tw_info.get_penalties();
-       }
-     }
-   }
+     if (soft_tw_penalty_obj_exists || soft_tw_exists) {
+      time_dim_info.has_soft_tw_penalty_obj = true;
+
+      // Configure soft time window data pointers
+      if (soft_tw_exists) {
+        time_dim_info.soft_tw_types = soft_tw_info.get_time_window_types();
+        time_dim_info.soft_tw_penalties = soft_tw_info.get_penalties();
+      }
+    }
+
+    time_dim_info.soft_to_hard_time_window_thresh =
+      solver_settings_ptr->soft_to_hard_time_window_thresh_;
+  }
  
    // CAP dimensions info
    auto& cap_dim_info                 = dimensions_info.capacity_dim;

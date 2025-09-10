@@ -243,7 +243,16 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_RAW_DUMP)
   raft::copy(d_pen.data(),  soft_pen.data(),  n_orders, handle->get_stream());
   dm.set_soft_time_windows(d_soft.data(), d_pen.data());
 
-  // 10) Capacidad
+  // 10) Ventanas de tiempo para vehículos (turno de 15:00 a 21:00)
+  std::vector<int> veh_earliest(n_vehicles, 15 * 60);  // 15:00 = 900 minutos
+  std::vector<int> veh_latest(n_vehicles, 21 * 60);    // 21:00 = 1260 minutos
+  rmm::device_uvector<int> d_veh_earliest(n_vehicles, handle->get_stream());
+  rmm::device_uvector<int> d_veh_latest(n_vehicles, handle->get_stream());
+  raft::copy(d_veh_earliest.data(), veh_earliest.data(), n_vehicles, handle->get_stream());
+  raft::copy(d_veh_latest.data(), veh_latest.data(), n_vehicles, handle->get_stream());
+  dm.set_vehicle_time_windows(d_veh_earliest.data(), d_veh_latest.data());
+
+  // 11) Capacidad
   std::vector<int> veh_caps(n_vehicles, 120);
   rmm::device_uvector<int> d_caps(n_vehicles, handle->get_stream());
   rmm::device_uvector<int> d_dem (n_orders,   handle->get_stream());
@@ -251,7 +260,7 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_RAW_DUMP)
   raft::copy(d_dem.data(),  demand.data(),   n_orders,   handle->get_stream());
   dm.add_capacity_dimension("capacity", d_dem.data(), d_caps.data());
 
-  // 11) Objetivos
+  // 12) Objetivos
   std::vector<cuopt::routing::objective_t> objs = {
     cuopt::routing::objective_t::COST,
     cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY
@@ -263,11 +272,13 @@ TEST_F(SC25Test, Turno2_Completo_ConTransitTime_RAW_DUMP)
   raft::copy(d_w.data(), w.data(), w.size(), handle->get_stream());
   dm.set_objective_function(d_objs.data(), d_w.data(), (int)objs.size());
 
-  // 12) Solver
+  // 13) Solver
   cuopt::routing::solver_settings_t<int,float> set;
-  set.set_time_limit(30.0f);
+  set.set_time_limit(60.0f);
+  set.set_soft_to_hard_time_window_thresh(25.0f);
   set.set_verbose_mode(true);
 
+  std::cout << "🚛 Vehículos configurados con turno de 15:00 a 21:00 (900-1260 min)\n";
   std::cout << "🚀 Ejecutando solver...\n";
   auto sol = cuopt::routing::solve(dm, set);
 

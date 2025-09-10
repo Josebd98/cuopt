@@ -48,6 +48,13 @@ void solver_settings_t<i_t, f_t>::dump_best_results(const std::string& file_path
 }
 
 template <typename i_t, typename f_t>
+void solver_settings_t<i_t, f_t>::set_soft_to_hard_time_window_thresh(f_t limit)
+{
+  soft_to_hard_time_window_thresh_ = limit;
+}
+
+
+template <typename i_t, typename f_t>
 f_t solver_settings_t<i_t, f_t>::get_time_limit() const noexcept
 {
   return time_limit_;
@@ -63,6 +70,12 @@ template <typename i_t, typename f_t>
 bool solver_settings_t<i_t, f_t>::get_error_logging_mode() const noexcept
 {
   return log_errors_;
+}
+
+template <typename i_t, typename f_t>
+f_t solver_settings_t<i_t, f_t>::get_soft_to_hard_time_window_thresh() const noexcept
+{
+  return soft_to_hard_time_window_thresh_;
 }
 
 template <typename i_t, typename f_t>

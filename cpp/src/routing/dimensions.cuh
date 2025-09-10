@@ -19,6 +19,7 @@
 
 #include <cuopt/routing/routing_structures.hpp>
 #include <utilities/cuda_helpers.cuh>
+#include <limits>
 
 namespace cuopt {
 namespace routing {
@@ -202,6 +203,7 @@ struct time_dimension_info_t {
   bool has_max_constraint  = false;
   bool has_travel_time_obj = false;
   bool has_soft_tw_penalty_obj = false;
+  double soft_to_hard_time_window_thresh = std::numeric_limits<double>::max();
   HDI constexpr bool has_constraints() const { return true; }
   
   // Soft time window data pointers (using void* for type flexibility)

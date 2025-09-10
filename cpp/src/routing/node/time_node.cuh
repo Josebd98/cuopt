@@ -27,6 +27,7 @@
  #include <raft/core/handle.hpp>
  
  #include <rmm/device_uvector.hpp>
+ #include <limits>
  
  namespace cuopt {
  namespace routing {
@@ -52,6 +53,8 @@
   double window_end   = 0.0;
     //! Flag to indicate if this node has a soft time window
     bool is_soft_node = false;
+    //! Threshold above which soft violations become hard
+    double soft_to_hard_time_window_thresh = std::numeric_limits<double>::max();
     //! Debug node ID for tracing violations
     i_t debug_node_id = -1;
  
@@ -72,6 +75,7 @@
     next.departure_forward = departure_forward + time_between;
     next.excess_forward = excess_forward;
     next.soft_excess_forward = soft_excess_forward;
+    next.soft_to_hard_time_window_thresh = soft_to_hard_time_window_thresh;
 
     if (next.departure_forward < next.window_start) {
       next.departure_forward = next.window_start;
@@ -80,7 +84,7 @@
       
 
         
-        if (next.is_soft_node) {
+        if (next.is_soft_node && violation <= next.soft_to_hard_time_window_thresh) {
           next.soft_excess_forward += violation;
 
           // For SOFT violations, keep the real arrival time for proper propagation
