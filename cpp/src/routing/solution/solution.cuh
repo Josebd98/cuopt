@@ -98,12 +98,7 @@
    if (problem.dimensions_info.time_dim.has_soft_time_windows() &&
        problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
      node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
-     
-     // DEBUG: Imprimir cómo cuOpt interpreta CADA nodo (solo primeros 20)
-     if (node_idx < 20) {
-       printf("🔍 cuOpt NODE[%d]: soft_tw_types[%d]=%d → is_soft_node=%s, window=[%.1f,%.1f]\n", 
-              node_idx, node_idx, (int)problem.dimensions_info.time_dim.soft_tw_types[node_idx],
-              node.time_dim.is_soft_node ? "SOFT" : "STRICT", earliest, latest);
+      node.time_dim.is_soft_node ? "SOFT" : "STRICT", earliest, latest);
      }
    }
  

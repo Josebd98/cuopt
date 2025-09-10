@@ -818,8 +818,15 @@ struct node_stack_t {
             loop_over_dimensions(beginning_of_hole.dimensions_info, [&] __device__(auto I) {
               if (get_dimension_of<I>(beginning_of_hole.dimensions_info).has_constraints()) {
                 auto dim_between = get_dim_between<I>(i - size_of_hole, i + 1);
-                get_dimension_of<I>(beginning_of_hole)
-                  .calculate_forward(get_dimension_of<I>(next_node), dim_between);
+                if constexpr (I == (size_t)dim_t::TIME) {
+                  get_dimension_of<I>(beginning_of_hole).calculate_forward(
+                    get_dimension_of<I>(next_node),
+                    dim_between,
+                    beginning_of_hole.dimensions_info.time_dim.soft_to_hard_thresh);
+                } else {
+                  get_dimension_of<I>(beginning_of_hole)
+                    .calculate_forward(get_dimension_of<I>(next_node), dim_between);
+                }
               }
             });
           }

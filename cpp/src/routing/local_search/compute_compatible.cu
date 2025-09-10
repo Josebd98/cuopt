@@ -53,6 +53,7 @@ DI bool check_route_possible_for_given_vehicle(
   auto first_node =
     create_depot_node<i_t, f_t, REQUEST>(problem, start_depot_info, start_depot_info, vehicle_id);
   auto second_node = create_node<i_t, f_t, REQUEST>(problem, i1_info, i1_info);
+  double thresh = problem.dimensions_info.time_dim.soft_to_hard_thresh;
   if (is_problem_run) {
     first_node.time_dim.calculate_forward(
       second_node.time_dim, get_transit_time(start_depot_info, i1_info, vehicle_info, true));

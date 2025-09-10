@@ -63,6 +63,16 @@ class solver_settings_t {
    */
   void set_error_logging_mode(bool logging);
 
+
+  /**
+   * @brief Set the tolerance threshold for soft time window violations.
+   * If a soft time window violation exceeds this threshold, it will be 
+   * treated as a strict violation (infeasible) instead of a soft penalty.
+   * 
+   * @param[in] minutes Maximum allowed violation in minutes for soft time windows
+   */
+  void set_soft_time_window_tolerance(f_t threshold);
+
   /**
    * @brief This is an experimental developer feature that allows displaying
    * internal best results to a given file in a csv format.
@@ -102,6 +112,7 @@ class solver_settings_t {
   i_t dump_interval_{std::numeric_limits<i_t>::max()};
   bool dump_best_results_{false};
   std::string best_result_file_name_;
+  f_t soft_to_hard_time_window_thresh_{std::numeric_limits<f_t>::max()};
 };
 
 }  // namespace routing

@@ -28,13 +28,9 @@
  
  #include <rmm/device_uvector.hpp>
  
-namespace cuopt {
-namespace routing {
-namespace detail {
-
-// Variable global para el umbral de tolerancia SOFT
-// Se inicializa desde dimensions_info en el solver
-extern double g_soft_tolerance_minutes;
+ namespace cuopt {
+ namespace routing {
+ namespace detail {
  
  template <typename i_t, typename f_t>
  class time_node_t {

@@ -240,7 +240,7 @@ __device__ void try_permutations(
       nodes[0].time_dim.calculate_backward(
         previous_node.time_dim,
         get_transit_time(
-          previous_node.request.info, nodes[0].request.info, s_route.vehicle_info(), true));
+          previous_node.request.info, nodes[0].request.info, s_route.vehicle_info(), true), thresh);
       if (!previous_node.time_dim.backward_feasible(
             s_route.vehicle_info(), move_candidates.weights[dim_t::TIME], excess_limit)) {
         break;
