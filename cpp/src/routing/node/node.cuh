@@ -75,18 +75,12 @@
    constexpr void calculate_forward_all(node_t& next_node,
                                         const VehicleInfo<f_t, is_device>& vehicle_info) const
    {
-    loop_over_dimensions(dimensions_info, [&](auto I) {
-      double arc_value = get_arc_of_dimension<i_t, f_t, I, is_device>(
-        request.info, next_node.request.info, vehicle_info);
-      if constexpr (I == (size_t)dim_t::TIME) {
-        get_dimension<I>().calculate_forward(next_node.get_dimension<I>(),
-                                             arc_value,
-                                             dimensions_info.get_dimension<I>().soft_to_hard_thresh);
-      } else {
-        get_dimension<I>().calculate_forward(next_node.get_dimension<I>(), arc_value);
-      }
-    });
-  }
+     loop_over_dimensions(dimensions_info, [&](auto I) {
+       double arc_value = get_arc_of_dimension<i_t, f_t, I, is_device>(
+         request.info, next_node.request.info, vehicle_info);
+       get_dimension<I>().calculate_forward(next_node.get_dimension<I>(), arc_value);
+     });
+   }
  
    // returns the cost delta of the new route after if we combine this node and next_node
    // this does not return the forward data but just the total cost of new route minus the old route

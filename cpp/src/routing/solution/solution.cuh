@@ -98,8 +98,7 @@
    if (problem.dimensions_info.time_dim.has_soft_time_windows() &&
        problem.dimensions_info.time_dim.soft_tw_types != nullptr) {
      node.time_dim.is_soft_node = (problem.dimensions_info.time_dim.soft_tw_types[node_idx] == 1);
-      node.time_dim.is_soft_node ? "SOFT" : "STRICT", earliest, latest);
-     }
+     
    }
  
    constexpr_for<node_t<i_t, f_t, REQUEST>::max_capacity_dim>([&](auto i) {

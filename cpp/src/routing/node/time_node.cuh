@@ -81,19 +81,12 @@
 
         
         if (next.is_soft_node) {
-          // SOFT nodes con umbral de tolerancia configurable (desde variable global)
-          if (violation <= g_soft_tolerance_minutes) {
-            // Retraso tolerable: mantener como SOFT violation
-            next.soft_excess_forward += violation;
-            // For SOFT violations, keep the real arrival time for proper propagation
-          } else {
-            // Retraso excesivo: convertir a STRICT violation
-            next.excess_forward += violation;
-            // For excessive delays, treat as STRICT and adjust departure time
-            next.departure_forward = next.window_end;
-          }
+          next.soft_excess_forward += violation;
+
+          // For SOFT violations, keep the real arrival time for proper propagation
         } else {
           next.excess_forward += violation;
+
           // For STRICT violations, adjust departure time to window end
           next.departure_forward = next.window_end;
         }

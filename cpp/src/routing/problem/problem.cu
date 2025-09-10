@@ -300,9 +300,6 @@
          time_dim_info.soft_tw_penalties = soft_tw_info.get_penalties();
        }
      }
-
-     time_dim_info.soft_to_hard_thresh =
-      static_cast<double>(solver_settings_ptr->get_soft_time_window_hardening_threshold());
    }
  
    // CAP dimensions info
