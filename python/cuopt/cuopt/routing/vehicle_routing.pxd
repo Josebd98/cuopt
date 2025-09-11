@@ -36,6 +36,8 @@ cdef extern from "cuopt/routing/solve.hpp" namespace "cuopt::routing":
         VARIANCE_ROUTE_SERVICE_TIME "cuopt::routing::objective_t::VARIANCE_ROUTE_SERVICE_TIME" # noqa
         PRIZE "cuopt::routing::objective_t::PRIZE"
         VEHICLE_FIXED_COST "cuopt::routing::objective_t::VEHICLE_FIXED_COST"
+        SOFT_TIME_WINDOW_PENALTY "cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY"
+        
 
     ctypedef enum node_type_t "cuopt::routing::node_type_t":
         DEPOT "cuopt::routing::node_type_t::DEPOT"
@@ -116,6 +118,9 @@ cdef extern from "cuopt/routing/solve.hpp" namespace "cuopt::routing":
         void set_order_time_windows(
             const i_t *earliest,
             const i_t *latest) except +
+        void set_soft_time_windows(
+            const uint8_t *time_window_types,
+            const f_t *penalties) except +
         void set_order_prizes(
             const f_t *prizes) except +
         void add_order_precedence(
@@ -137,8 +142,10 @@ cdef extern from "cuopt/routing/solve.hpp" namespace "cuopt::routing":
         void set_verbose_mode(bool verbose) except+
         void set_error_logging_mode(bool logging) except+
         void dump_best_results(const string &file_path, i_t interval) except+
+        void set_soft_to_hard_time_window_thresh(f_t limit) except+
 
         f_t get_time_limit() except+
+        f_t get_soft_to_hard_time_window_thresh() except+
 
 cdef extern from "cuopt/routing/cython/cython.hpp" namespace "cuopt::cython": # noqa
     cdef unique_ptr[vehicle_routing_ret_t] call_solve(

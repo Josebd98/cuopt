@@ -53,6 +53,7 @@ cdef extern from "cuopt/routing/routing_structures.hpp" namespace "cuopt::routin
         VARIANCE_ROUTE_SERVICE_TIME "cuopt::routing::objective_t::VARIANCE_ROUTE_SERVICE_TIME" # noqa
         PRIZE "cuopt::routing::objective_t::PRIZE"
         VEHICLE_FIXED_COST "cuopt::routing::objective_t::VEHICLE_FIXED_COST"
+        SOFT_TIME_WINDOW_PENALTY "cuopt::routing::objective_t::SOFT_TIME_WINDOW_PENALTY"
 
 
 cdef extern from "cuopt/routing/cython/generator.hpp" namespace "cuopt::routing::generator": # noqa
