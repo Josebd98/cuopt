@@ -318,34 +318,74 @@ def create_data_model(
         data_model.set_order_time_windows(
             t_time_windows["earliest"], t_time_windows["latest"]
         )
-        
-        # Handle soft time windows if provided
-        t_time_window_types = optimization_data.task_data.get("task_time_window_types")
-        t_time_window_penalties = optimization_data.task_data.get("task_time_window_penalties")
-        
-        if t_time_window_types is not None:
-            # Convert string types to numeric (0 = strict, 1 = soft)
-            numeric_types = []
-            for tw_type in t_time_window_types:
-                if tw_type == "strict":
-                    numeric_types.append(0)
-                elif tw_type == "soft":
-                    numeric_types.append(1)
-                else:
-                    raise ValueError(f"Invalid time window type: {tw_type}. Must be 'strict' or 'soft'")
-            
-            # If penalties not provided, use default values
-            if t_time_window_penalties is None:
-                # Default penalty of 100.0 for soft windows, 0.0 for strict
-                default_penalties = [100.0 if tw_type == "soft" else 0.0 
-                                   for tw_type in t_time_window_types]
-                t_time_window_penalties = default_penalties
-            
-            # Use the new C++ implementation for soft time windows
-            data_model.set_soft_time_windows(
-                cudf.Series(numeric_types, dtype='uint8'),
-                cudf.Series(t_time_window_penalties, dtype='float32')
+
+    # Process soft time windows (robusto + debug)
+    t_time_window_types = optimization_data.task_data.get("task_time_window_types")
+    t_time_window_penalties = optimization_data.task_data.get("task_time_window_penalties")
+
+    def _to_list(x):
+        """Convierte cudf/pandas/pyarrow/numpy a lista Python cuando aplique."""
+        try:
+            if hasattr(x, "to_arrow"):
+                return x.to_arrow().to_pylist()
+            if hasattr(x, "to_pandas"):
+                return x.to_pandas().tolist()
+            if hasattr(x, "tolist"):
+                return x.tolist()
+        except Exception:
+            pass
+        return x
+
+    def _normalize_tw_types(types_in):
+        """
+        Acepta 'strict'/'soft', 0/1, numpy/cudf scalars y devuelve lista[int] 0/1.
+        """
+        types_in = _to_list(types_in)
+        norm = []
+        for t in (types_in or []):
+            # ints (incl. numpy enteros)
+            try:
+                if isinstance(t, (int,)) or (hasattr(t, "dtype") and "int" in str(getattr(t, "dtype", ""))):
+                    v = int(t)
+                    if v not in (0, 1):
+                        raise ValueError
+                    norm.append(v)
+                    continue
+            except Exception:
+                pass
+            # strings / otros
+            s = str(t).strip().lower()
+            if s in ("0", "strict"):
+                norm.append(0)
+            elif s in ("1", "soft"):
+                norm.append(1)
+            else:
+                raise InputValidationError(f"Invalid time window type: {t} (must be 0/1 or 'strict'/'soft')")
+        return norm
+
+    if t_time_window_types is not None:
+        # Normalizar SIEMPRE a 0/1
+        numeric_types = _normalize_tw_types(t_time_window_types)
+
+        # Penalties por defecto si no vienen
+        pens_list = _to_list(t_time_window_penalties)
+        if pens_list is None:
+            pens_list = [1.0 if v == 1 else 0.0 for v in numeric_types]
+
+        # Validaciones de longitud
+        if len(numeric_types) != len(pens_list):
+            raise InputValidationError(
+                f"Length mismatch: task_time_window_types({len(numeric_types)}) != task_time_window_penalties({len(pens_list)})"
             )
+        # Tipado explícito para el core
+        types_arr = np.asarray(numeric_types, dtype=np.int32)
+        pens_arr  = np.asarray(pens_list, dtype=np.float32)
+
+        data_model.set_soft_time_windows(
+            cudf.Series(types_arr),
+            cudf.Series(pens_arr)
+        )
+
 
     if optimization_data.task_data["service_times"] is not None:
         service_times = optimization_data.task_data["service_times"]
@@ -409,6 +449,11 @@ def create_solver(optimization_data: OptimizationDataModel):
     if optimization_data.solver_config["error_logging"] is not None:
         solver_settings.set_error_logging_mode(
             optimization_data.solver_config["error_logging"]
+        )
+    
+    if optimization_data.solver_config["soft_to_hard_time_window_thresh"] is not None:
+        solver_settings.set_soft_to_hard_time_window_thresh(
+            optimization_data.solver_config["soft_to_hard_time_window_thresh"]
         )
 
     return warnings, solver_settings

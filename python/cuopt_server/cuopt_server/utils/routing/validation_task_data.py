@@ -119,6 +119,27 @@ def validate_task_data(
                     "All task time windows must have task_x_time_window[0] < task_x_time_window[1]",  # noqa
                 )
 
+    # Check task time window types
+    if task_time_window_types is not None:
+        task_length_check_array.append(len(task_time_window_types))
+        # Valid types are "strict" (0) and "soft" (1) 
+        for tw_type in task_time_window_types:
+            if tw_type not in ["strict", "soft", 0, 1]:
+                return (
+                    False,
+                    "task_time_window_types must be either 'strict'/'soft' or 0/1",
+                )
+
+    # Check task time window penalties
+    if task_time_window_penalties is not None:
+        task_length_check_array.append(len(task_time_window_penalties))
+        # All penalties must be >= 0
+        if any(penalty < 0 for penalty in task_time_window_penalties):
+            return (
+                False,
+                "task_time_window_penalties must be greater than or equal to 0",
+            )
+
     # Check task service times
     if task_service_times is not None:
         if type(task_service_times) is list:
@@ -167,44 +188,6 @@ def validate_task_data(
             return (
                 False,
                 "vehicle Id should be greater than or equal to zero",
-            )
-
-    # Validate soft time window parameters
-    if task_time_window_types is not None:
-        if len(task_time_window_types) != len(task_locations):
-            return (
-                False,
-                "task_time_window_types length must match task_locations length",
-            )
-        
-        valid_types = {"strict", "soft"}
-        for tw_type in task_time_window_types:
-            if tw_type not in valid_types:
-                return (
-                    False,
-                    f"Invalid time window type: {tw_type}. Must be 'strict' or 'soft'",
-                )
-    
-    if task_time_window_penalties is not None:
-        if len(task_time_window_penalties) != len(task_locations):
-            return (
-                False,
-                "task_time_window_penalties length must match task_locations length",
-            )
-        
-        for penalty in task_time_window_penalties:
-            if penalty < 0:
-                return (
-                    False,
-                    "task_time_window_penalties must be non-negative",
-                )
-    
-    # If both types and penalties are provided, they must have consistent length
-    if (task_time_window_types is not None and task_time_window_penalties is not None):
-        if len(task_time_window_types) != len(task_time_window_penalties):
-            return (
-                False,
-                "task_time_window_types and task_time_window_penalties must have the same length",
             )
 
     return (True, "Valid Task Data")

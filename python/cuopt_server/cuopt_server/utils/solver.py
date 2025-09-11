@@ -277,6 +277,13 @@ def populate_optimization_data(
                 solver_config.error_logging,
             )
         )
+        # Propagate soft_to_hard_time_window_thresh into optimization_data
+        try:
+            sth = getattr(solver_config, "soft_to_hard_time_window_thresh", None)
+            if sth is not None:
+                optimization_data.solver_config["soft_to_hard_time_window_thresh"] = float(sth)
+        except Exception:
+            pass
 
     return optimization_data
 

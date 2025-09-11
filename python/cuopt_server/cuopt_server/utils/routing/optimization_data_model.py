@@ -129,6 +129,8 @@ class OptimizationDataModel:
             "service_times": None,
             "prizes": None,
             "order_vehicle_match": None,
+            "task_time_window_types": None,
+            "task_time_window_penalties": None,
         }
 
     def reset_solver_config(self):
@@ -139,6 +141,7 @@ class OptimizationDataModel:
             "config_file": None,
             "verbose_mode": None,
             "error_logging": None,
+            "soft_to_hard_time_window_thresh": None,
         }
 
     def get_cost_waypoint_graph(self):
@@ -812,8 +815,8 @@ class OptimizationDataModel:
         task_service_times,
         prizes,
         order_vehicle_match,
-        task_time_window_types=None,
-        task_time_window_penalties=None,
+        task_time_window_types,
+        task_time_window_penalties,
     ):
         if not self.is_route_detail_set:
             return (
@@ -844,8 +847,8 @@ class OptimizationDataModel:
             task_service_times,
             prizes,
             order_vehicle_match,
-            task_time_window_types=task_time_window_types,
-            task_time_window_penalties=task_time_window_penalties,
+            task_time_window_types,
+            task_time_window_penalties,
             updating=False,
             comparison_locations=None,
         )
@@ -875,6 +878,10 @@ class OptimizationDataModel:
                     columns=["earliest", "latest"],
                     dtype=np.int32,
                 )
+            if task_time_window_types:
+                self.task_data["task_time_window_types"] = task_time_window_types
+            if task_time_window_penalties:
+                self.task_data["task_time_window_penalties"] = task_time_window_penalties
             if task_service_times:
                 self.task_data["service_times"] = task_service_times
             if prizes is not None:
@@ -902,8 +909,6 @@ class OptimizationDataModel:
         task_service_times,
         prizes,
         order_vehicle_match,
-        task_time_window_types=None,
-        task_time_window_penalties=None,
     ):
         if not self.is_route_detail_set:
             return (
@@ -937,8 +942,8 @@ class OptimizationDataModel:
             task_service_times,
             prizes,
             order_vehicle_match,
-            task_time_window_types=task_time_window_types,
-            task_time_window_penalties=task_time_window_penalties,
+            task_time_window_types=None,  # Not supported in update
+            task_time_window_penalties=None,  # Not supported in update
             updating=True,
             comparison_locations=self.task_data["task_locations"],
         )
