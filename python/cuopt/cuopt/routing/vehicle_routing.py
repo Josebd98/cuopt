@@ -773,65 +773,70 @@ class DataModel(vehicle_routing_wrapper.DataModel):
     @catch_cuopt_exception
     def set_soft_time_windows(self, time_window_types, penalties):
         """
-        Set soft time window constraints for orders.
-        
-        This allows some orders to have their time windows violated with penalties
-        instead of hard constraints. Orders marked as 'soft' can be visited outside
-        their time windows, but incur a penalty proportional to the violation.
+        Set soft time windows for orders in the Vehicle Routing Problem.
+
+        Allows specifying which time windows are strict (must be respected) or soft 
+        (can be violated with penalty). This enables more flexible routing solutions
+        where some time window violations are acceptable with appropriate penalties.
 
         Parameters
         ----------
-        time_window_types : cudf.Series dtype - uint8 or List
-            Series or list where 0 = strict time window, 1 = soft time window.
-            Size must match the number of orders.
-        penalties : cudf.Series dtype - float32 or List  
-            Penalty rates for soft time window violations (per unit of time).
-            Only used for orders marked as soft (type = 1).
-            Size must match the number of orders.
+        time_window_types : cudf.Series dtype - uint8
+            cudf.Series containing the time window type for each order.
+            - 0 = STRICT: Time window must be respected (traditional behavior)
+            - 1 = SOFT: Time window can be violated with penalty
+            Size must equal number of orders in the data model.
+        penalties : cudf.Series dtype - float32
+            cudf.Series containing the penalty rate for each order when time
+            windows are violated. Only applies to soft time windows (type = 1).
+            For strict time windows (type = 0), penalty value is ignored.
+            Size must equal number of orders in the data model.
 
         Notes
         -----
-        - Strict time windows (type = 0) must be respected exactly
-        - Soft time windows (type = 1) can be violated with penalties
-        - Penalties apply to both early arrivals and late arrivals
-        - Total penalty = (early_violation + late_violation) * penalty_rate
+        - Must be called after set_order_time_windows()
+        - Penalty calculation: (early_violation + late_violation) * penalty_rate
+        - Use SOFT_TIME_WINDOW_PENALTY objective to include penalties in optimization
+        - Strict time windows (type = 0) behave exactly as traditional time windows
 
         Examples
         --------
         >>> from cuopt import routing
         >>> import cudf
+        >>> # Set up basic data model...
         >>> data_model = routing.DataModel(4, 2)
-        >>> 
-        >>> # Mixed strict and soft time windows
-        >>> types = [0, 1, 0, 1]  # strict, soft, strict, soft
-        >>> penalties = [0.0, 100.0, 0.0, 50.0]  # penalties for soft windows
+        >>> # Set regular time windows first
+        >>> earliest = [0, 15, 60, 0]
+        >>> latest = [500, 180, 150, 180]
+        >>> data_model.set_order_time_windows(
+        ...     cudf.Series(earliest), cudf.Series(latest)
+        ... )
+        >>> # Make some time windows soft with penalties
+        >>> time_window_types = [0, 1, 1, 0]  # depot and last strict, others soft
+        >>> penalties = [0.0, 100.0, 50.0, 0.0]  # penalty rates for violations
         >>> data_model.set_soft_time_windows(
-        ...     cudf.Series(types, dtype='uint8'),
+        ...     cudf.Series(time_window_types, dtype='uint8'),
         ...     cudf.Series(penalties, dtype='float32')
         ... )
         """
         n_orders = self.get_num_orders()
-        
-        # Convert to cudf Series if needed
+
+        # Validate time_window_types
         if not isinstance(time_window_types, cudf.Series):
-            time_window_types = cudf.Series(time_window_types, dtype='uint8')
-        if not isinstance(penalties, cudf.Series):
-            penalties = cudf.Series(penalties, dtype='float32')
-            
-        # Validate input sizes
+            raise ValueError("time_window_types must be a cudf.Series")
         if len(time_window_types) != n_orders:
             raise ValueError(f"time_window_types length ({len(time_window_types)}) "
-                           f"must match number of orders ({n_orders})")
+                           f"must equal number of orders ({n_orders})")
+        if not all(t in [0, 1] for t in time_window_types.to_pandas()):
+            raise ValueError("time_window_types must contain only 0 (strict) or 1 (soft)")
+
+        # Validate penalties
+        if not isinstance(penalties, cudf.Series):
+            raise ValueError("penalties must be a cudf.Series")
         if len(penalties) != n_orders:
             raise ValueError(f"penalties length ({len(penalties)}) "
-                           f"must match number of orders ({n_orders})")
-        
-        # Validate time window types (must be 0 or 1)
-        if not ((time_window_types == 0) | (time_window_types == 1)).all():
-            raise ValueError("time_window_types must contain only 0 (strict) or 1 (soft)")
-            
-        # Validate penalties (must be non-negative)
-        if (penalties < 0).any():
+                           f"must equal number of orders ({n_orders})")
+        if any(p < 0 for p in penalties.to_pandas()):
             raise ValueError("penalties must be non-negative")
 
         super().set_soft_time_windows(time_window_types, penalties)
@@ -1532,6 +1537,44 @@ class SolverSettings(vehicle_routing_wrapper.SolverSettings):
             Set True to display information. Execution time may be impacted.
         """
         super().set_error_logging_mode(logging)
+
+    @catch_cuopt_exception
+    def set_soft_to_hard_time_window_thresh(self, limit):
+        """
+        Set the threshold beyond which soft time window violations are treated as hard violations.
+
+        This parameter controls when soft time window violations become unacceptable.
+        If a soft time window violation exceeds this threshold, it will be treated
+        as a strict violation (infeasible) instead of just adding a penalty.
+
+        Parameters
+        ----------
+        limit : float
+            Maximum allowed violation (in time units) to still be considered soft.
+            Violations beyond this limit become hard constraints.
+            Must be non-negative.
+
+        Examples
+        --------
+        >>> from cuopt import routing
+        >>> settings = routing.SolverSettings()
+        >>> settings.set_soft_to_hard_time_window_thresh(25.0)  # 25 time units max
+        """
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        super().set_soft_to_hard_time_window_thresh(limit)
+
+    @catch_cuopt_exception
+    def get_soft_to_hard_time_window_thresh(self):
+        """
+        Get the current soft-to-hard time window threshold.
+
+        Returns
+        -------
+        float
+            The current threshold value beyond which soft violations become hard.
+        """
+        return super().get_soft_to_hard_time_window_thresh()
 
     @catch_cuopt_exception
     def dump_best_results(self, file_path, interval):

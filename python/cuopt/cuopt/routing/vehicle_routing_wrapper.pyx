@@ -130,8 +130,8 @@ class Objective(IntEnum):
 
     PRIZE               - Models with respect to prizes collected by the
                           serviced orders
-    VEHICLE_FIXED_COST  - Models cost per vehicle. Enabled when set_vehicle_fixed_costs is used.
-    SOFT_TIME_WINDOW_PENALTY - Models penalties from soft time window violations.
+    VEHICLE_FIXED_COST                - Models cost per vehicle. Enabled when set_vehicle_fixed_costs is used.
+    SOFT_TIME_WINDOW_PENALTY         - Models penalty for violating soft time windows
     """
 
     COST = objective_t.COST
@@ -187,9 +187,9 @@ cdef class DataModel:
         self.order_locations = cudf.Series()
         self.order_earliest = cudf.Series()
         self.order_latest = cudf.Series()
-        self.soft_tw_types = cudf.Series()
-        self.soft_tw_penalties = cudf.Series()
         self.order_prizes = cudf.Series()
+        self.soft_time_window_types = cudf.Series()
+        self.soft_time_window_penalties = cudf.Series()
         self.pickup_indices = cudf.Series()
         self.delivery_indices = cudf.Series()
         self.objectives = cudf.Series()
@@ -530,19 +530,19 @@ cdef class DataModel:
         )
 
     def set_soft_time_windows(self, time_window_types, penalties):
-        self.soft_tw_types = type_cast(time_window_types, np.uint8, "time_window_types")
-        self.soft_tw_penalties = type_cast(penalties, np.float32, "penalties")
+        self.soft_time_window_types = type_cast(time_window_types, np.uint8, "time_window_types")
+        self.soft_time_window_penalties = type_cast(penalties, np.float32, "penalties")
 
-        cdef uintptr_t c_types = (
-            self.soft_tw_types.__cuda_array_interface__['data'][0]
+        cdef uintptr_t c_time_window_types = (
+            self.soft_time_window_types.__cuda_array_interface__['data'][0]
         )
         cdef uintptr_t c_penalties = (
-            self.soft_tw_penalties.__cuda_array_interface__['data'][0]
+            self.soft_time_window_penalties.__cuda_array_interface__['data'][0]
         )
 
         self.c_data_model_view.get().set_soft_time_windows(
-            <const unsigned char*>c_types,
-            <const float*>c_penalties
+            <const uint8_t *> c_time_window_types,
+            <const float *> c_penalties
         )
 
     def set_order_prizes(self, prizes):
@@ -758,8 +758,14 @@ cdef class SolverSettings:
     def dump_config_file(self, file_name):
         self.config_file_path = file_name
 
+    def set_soft_to_hard_time_window_thresh(self, limit):
+        self.c_solver_settings.get().set_soft_to_hard_time_window_thresh(<float>limit)
+
     def get_time_limit(self):
         return self.c_solver_settings.get().get_time_limit()
+
+    def get_soft_to_hard_time_window_thresh(self):
+        return self.c_solver_settings.get().get_soft_to_hard_time_window_thresh()
 
     def get_best_results_file_path(self):
         return self.file_path
