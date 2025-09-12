@@ -13,1071 +13,1104 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
+import copy
+import json
+from enum import Enum
+from typing import Dict, List, Optional, Union
 
-import cudf
-from cuopt import routing
+import jsonref
+from pydantic import BaseModel, Extra, Field, RootModel, root_validator
 
-from cuopt_server.utils.routing.validation_cost_matrix import (
-    validate_cost_matrix,
-)
-from cuopt_server.utils.routing.validation_fleet_data import (
-    validate_fleet_data,
-)
-from cuopt_server.utils.routing.validation_solver_config import (
-    validate_solver_config,
-)
-from cuopt_server.utils.routing.validation_task_data import validate_task_data
-from cuopt_server.utils.routing.validation_waypoint_graph import (
-    validate_waypoint_graph,
-)
+from ..._version import __version_major_minor__
 
 
-def get_none_for_empty_list(data):
-    return data if data is not None and len(data) > 0 else None
+class LocationTypeEnum(str, Enum):
+    Depot = "Depot"
+    Pickup = "Pickup"
+    Delivery = "Delivery"
+    Break = "Break"
+    w = "w"
 
 
-def get_objectives_as_lists(objectives):
-    cuopt_objectives = []
-    objective_weights = []
-
-    if objectives.cost is not None:
-        cuopt_objectives.append(routing.Objective.COST)
-        objective_weights.append(objectives.cost)
-    if objectives.travel_time is not None:
-        cuopt_objectives.append(routing.Objective.TRAVEL_TIME)
-        objective_weights.append(objectives.travel_time)
-    if objectives.variance_route_size is not None:
-        cuopt_objectives.append(routing.Objective.VARIANCE_ROUTE_SIZE)
-        objective_weights.append(objectives.variance_route_size)
-    if objectives.variance_route_service_time is not None:
-        cuopt_objectives.append(routing.Objective.VARIANCE_ROUTE_SERVICE_TIME)
-        objective_weights.append(objectives.variance_route_service_time)
-    if objectives.prize is not None:
-        cuopt_objectives.append(routing.Objective.PRIZE)
-        objective_weights.append(objectives.prize)
-    if objectives.vehicle_fixed_cost is not None:
-        cuopt_objectives.append(routing.Objective.VEHICLE_FIXED_COST)
-        objective_weights.append(objectives.vehicle_fixed_cost)
-    if objectives.soft_time_window_penalty is not None:
-        cuopt_objectives.append(routing.Objective.SOFT_TIME_WINDOW_PENALTY)
-        objective_weights.append(objectives.soft_time_window_penalty)
-
-    return cuopt_objectives, objective_weights
+class StrictModel(BaseModel):
+    class Config:
+        extra = Extra.forbid
 
 
-objective_names = {
-    routing.Objective.COST: "cost",
-    routing.Objective.TRAVEL_TIME: "travel_time",
-    routing.Objective.VARIANCE_ROUTE_SIZE: "variance_route_size",
-    routing.Objective.VARIANCE_ROUTE_SERVICE_TIME: "variance_route_service_time",  # noqa
-    routing.Objective.PRIZE: "prize",
-    routing.Objective.VEHICLE_FIXED_COST: "vehicle_fixed_cost",
-    routing.Objective.SOFT_TIME_WINDOW_PENALTY: "soft_time_window_penalty",
+class Objective(StrictModel):
+    cost: Optional[float] = Field(
+        default=None,
+        examples=[1],
+        description=(
+            "dtype: float32. "
+            " \n\n "
+            "The weight assigned to minimizing the cost for a given solution, default value is 1"  # noqa
+        ),
+    )
+    travel_time: Optional[float] = Field(
+        default=None,
+        examples=[0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to minimizing total travel time for a given solution (includes drive, service and wait time)"  # noqa
+        ),
+    )
+    variance_route_size: Optional[float] = Field(
+        default=None,
+        examples=[0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to the variance in the number of orders served by each route."  # noqa
+        ),
+    )
+    variance_route_service_time: Optional[float] = Field(
+        default=None,
+        examples=[0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to the variance in the accumulated service times of each route"  # noqa
+        ),
+    )
+    prize: Optional[float] = Field(
+        default=None,
+        examples=[0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to the prize in accumulated prizes for each job fulfilled."  # noqa
+            "This will be negated from overall values accumulated with other objectives."  # noqa
+            "For example, if cost accumulated is 10 and objective value for it is 1, and if the prize accumulated is 3 and objective is 2, "  # noqa
+            "then total cost would look something like this 10 x 1 - 3 x 2 = 4."  # noqa
+            "Note: When this value is zero the prize objective is ignored."  # noqa
+        ),
+    )
+    vehicle_fixed_cost: Optional[float] = Field(
+        default=None,
+        examples=[0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to the accumulated fixed costs of each vehicle used in solution"  # noqa
+        ),
+    )
+    soft_time_window_penalty: Optional[float] = Field(
+        default=None,
+        examples=[1.0],
+        description=(
+            "dtype: float32."
+            " \n\n "
+            "The weight assigned to penalties for violating soft time window constraints. "
+            "Soft time windows allow violations but incur penalties proportional to the violation amount."  # noqa
+        ),
+    )
+
+
+class VehicleBreak(StrictModel):
+    vehicle_id: int = Field(
+        ...,
+        description=(
+            "dtype: int32, vehicle_id >= 0."
+            " \n\n "
+            "Vehicle id as an integer denoting the vehicle index for which the break is added"  # noqa
+        ),
+    )
+    earliest: int = Field(
+        ...,
+        description=(
+            "dtype: int32, earliest >= 0." " \n\n " "Earliest break time"
+        ),
+    )
+    latest: int = Field(
+        ...,
+        description=("dtype: int32, latest > 0." " \n\n " "Latest break time"),
+    )
+    duration: int = Field(
+        ...,
+        description=(
+            "dtype: int32, duration >= 0."
+            " \n\n "
+            "Duration of the break time"
+        ),
+    )
+    locations: Optional[List[int]] = Field(
+        ...,
+        description=(
+            "dtype: int32, location_id >= 0."
+            " \n\n "
+            "Location ids where this break can be taken."
+        ),
+    )
+
+
+class VehicleOrderMatch(StrictModel):
+    vehicle_id: int = Field(
+        ...,
+        description=(
+            "dtype: int32, vehicle_id >= 0."
+            " \n\n "
+            "Vehicle id as an integer, and can serve all the "
+            "order listed in order_ids."
+        ),
+    )
+    order_ids: List[int] = Field(
+        ...,
+        description=(
+            "dtype: int32, order_id >= 0."
+            " \n\n "
+            "Indices of orders which can be served by this particular vehicle"  # noqa
+        ),
+    )
+
+
+class OrderVehicleMatch(StrictModel):
+    order_id: int = Field(
+        ...,
+        description=(
+            "dtype: int32, order_id >= 0."
+            " \n\n "
+            "Indices of orders which can be served by this particular vehicle"  # noqa
+            "Order id as an integer"
+        ),
+    )
+    vehicle_ids: List[int] = Field(
+        ...,
+        description=(
+            "dtype: int32, vehicle_id >= 0."
+            " \n\n "
+            "Indices of the vehicles which can serve this particular order. \n"  # noqa
+        ),
+    )
+
+
+class WaypointGraph(StrictModel):
+    edges: List[int] = Field(
+        ...,
+        description=(
+            "dtype: int32, edge >= 0."
+            " \n\n "
+            "Vertices of all the directed edges."
+        ),
+    )
+    offsets: List[int] = Field(
+        ...,
+        description=(
+            "dtype: int32, offset >= 0."
+            " \n\n "
+            "Offsets which provide number of edges from the source vertex signified by the index."  # noqa
+        ),
+    )
+    weights: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "dtype: float32, weight >= 0." " \n\n " "Weights of each edges."
+        ),
+    )
+
+
+class WaypointGraphData(StrictModel):
+    waypoint_graph: Optional[Dict[int, WaypointGraph]] = Field(default=None)
+
+
+class WaypointGraphWeights(StrictModel):
+    weights: Dict[int, List[float]] = Field(
+        ...,
+        description=(
+            "dtype: float32, weight >= 0." " \n\n " "Weights of each edges"
+        ),
+    )
+
+
+class CostMatrices(StrictModel):
+    data: Optional[Dict[int, List[List[float]]]] = Field(
+        default=None,
+        description=(
+            "dtype : vehicle-type (uint8), cost (float32), cost >= 0.\n"
+            " \n\n "
+            "Sqaure matrix with cost to travel from A to B and B to A. \n"
+            "If there different types of vehicles which have different \n"
+            "cost matrices, they can be provided with key value pair \n"
+            "where key is vehicle-type and value is cost matrix. Value of \n"
+            "vehicle type should be within [0, 255]"
+        ),
+    )
+
+
+class FleetData(StrictModel):
+    vehicle_locations: List[List[int]] = Field(
+        ...,
+        examples=[[[0, 0], [0, 0]]],
+        description=(
+            "dtype: int32, vehicle_location >= 0."
+            " \n\n "
+            "Start and end location of the vehicles in the given set of locations in WayPointGraph or CostMatrices.\n"  # noqa
+            "Example: For 2 vehicles, "
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [veh_1_start_loc, veh_1_end_loc],"
+            " \n\n "
+            "        [veh_2_start_loc, veh_2_end_loc]"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    vehicle_ids: Optional[List[str]] = Field(
+        default=None,
+        examples=[["veh-1", "veh-2"]],
+        description=("List of the vehicle ids or names provided as a string."),
+    )
+    capacities: Optional[List[List[int]]] = Field(
+        default=None,
+        examples=[[[2, 2], [4, 1]]],
+        description=(
+            "dtype: int32, capacity >= 0."
+            " \n\n "
+            "Note: For this release number of capacity dimensions are limited to 3."  # noqa
+            " \n\n "
+            "Lists of capacities of each vehicle.\n"
+            "Multiple capacities can be added and each list will represent "
+            "one kind of capacity. Order of kind of the capacities "
+            "should match order of the demands.\n"
+            "Total capacity for each type "
+            "should be sufficient to complete all demand of that type."
+            "Example: In case of two sets of capacities per vehicle with 3 vehicles, "  # noqa
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [cap_1_veh_1, cap_1_veh_2, cap_1_veh_3],"
+            " \n\n "
+            "        [cap_2_veh_1, cap_2_veh_2, cap_2_veh_3]"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    vehicle_time_windows: Optional[List[List[int]]] = Field(
+        default=None,
+        examples=[[[0, 10], [0, 10]]],
+        description=(
+            "dtype: int32, time >= 0."
+            " \n\n "
+            "Earliest and Latest time window pairs for each vehicle,\n"
+            "for example the data would look as follows for 2 vehicles, \n"
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [veh_1_earliest, veh_1_latest],"
+            " \n\n "
+            "        [veh_2_earliest, veh_2_latest]"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    vehicle_break_time_windows: Optional[List[List[List[int]]]] = Field(
+        default=None,
+        examples=[[[[1, 2], [2, 3]]]],
+        description=(
+            "dtype: int32, time >= 0."
+            " \n\n "
+            "Multiple break time windows can be added for each vehicle."
+            "Earliest and Latest break time window pairs for each vehicle,\n"
+            "For example, in case of 2 sets of breaks for each vehicle which translates to 2 dimensions of breaks,\n"  # noqa
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [[brk_1_veh_1_earliest, brk_1_veh_1_latest], [brk_1_veh_2_earliest, brk_1_veh_2_latest]]"  # noqa
+            " \n\n "
+            "        [[brk_2_veh_1_earliest, brk_2_veh_1_latest], [brk_2_veh_2_earliest, brk_2_veh_2_latest]]"  # noqa
+            " \n\n "
+            "    ]"
+            " \n\n "
+            "The break duration within this time window is provided through "
+            "vehicle_break_durations."
+        ),
+    )
+    vehicle_break_durations: Optional[List[List[int]]] = Field(
+        default=None,
+        examples=[[[1, 1]]],
+        description=(
+            "dtype: int32, time >= 0."
+            " \n\n "
+            "Break duration for each vehicle. "
+            "vehicle_break_time_windows should be provided to use this option."
+            "For example, in case of having 2 breaks for each vehicle, "
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [brk_1_veh_1_duration, brk_1_veh_2_duration],"
+            " \n\n "
+            "        [brk_2_veh_1_duration, brk_2_veh_2_duration],"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    vehicle_break_locations: Optional[List[int]] = Field(
+        default=None,
+        examples=[[0, 1]],
+        description=(
+            "dtype: int32, location >= 0."
+            " \n\n "
+            "Break location where vehicles can take breaks. "
+            "If not set, any location can be used for the break."
+        ),
+    )
+    vehicle_breaks: Optional[List[VehicleBreak]] = Field(
+        default=None,
+        examples=[
+            [
+                {
+                    "vehicle_id": 0,
+                    "earliest": 0,
+                    "latest": 10,
+                    "duration": 2,
+                    "locations": [2],
+                },  # noqa
+                {
+                    "vehicle_id": 1,
+                    "earliest": 10,
+                    "latest": 15,
+                    "duration": 3,
+                    "locations": [3, 5],
+                },  # noqa
+                {
+                    "vehicle_id": 1,
+                    "earliest": 0,
+                    "latest": 5,
+                    "duration": 2,
+                },  # noqa
+            ]
+        ],
+        description=(
+            "A list of Vehicle Breaks where vehicle id can take a break "
+            "between earliest and latest time for specified duration "
+            "in the specified locations. By default any location can "
+            "be used."
+        ),
+    )
+    vehicle_types: Optional[List[int]] = Field(
+        default=None,
+        examples=[[1, 2]],
+        description=(
+            "dtype: uint8."
+            " \n\n "
+            "Types of vehicles in the fleet given as positive integers."
+        ),
+    )
+    vehicle_order_match: Optional[List[VehicleOrderMatch]] = Field(
+        default=None,
+        examples=[
+            [
+                {"vehicle_id": 0, "order_ids": [0]},
+                {"vehicle_id": 1, "order_ids": [1]},
+            ]
+        ],
+        description=(
+            "A list of vehicle order match, where the match would contain "
+            "a vehicle id and a list of orders that vehicle can serve."
+        ),
+    )
+    skip_first_trips: Optional[List[bool]] = Field(
+        default=None,
+        examples=[[True, False]],
+        description="Drop the cost of trip to first location for that vehicle.",  # noqa
+    )
+    drop_return_trips: Optional[List[bool]] = Field(
+        default=None,
+        examples=[[True, False]],
+        description="Drop cost of return trip for each vehicle.",
+    )
+    min_vehicles: Optional[int] = Field(
+        default=None,
+        examples=[2],
+        description=(
+            "dtype: int32, min_vehicles >= 1."
+            " \n\n "
+            "Solution should consider minimum number of vehicles"  # noqa
+        ),
+    )
+    vehicle_max_costs: Optional[List[float]] = Field(
+        default=None,
+        examples=[[7, 10]],
+        description=(
+            "dtype: float32, max_costs >= 0."
+            " \n\n "
+            "Maximum cost a vehicle can incur and it is based on cost matrix/cost waypoint graph."  # noqa
+        ),
+    )
+    vehicle_max_times: Optional[List[float]] = Field(
+        default=None,
+        examples=[[7, 10]],
+        description=(
+            "dtype: float32, max_time >= 0."
+            " \n\n "
+            "Maximum time a vehicle can operate (includes drive, service and wait time), this is based on travel time matrix/travel time waypoint graph."  # noqa
+        ),
+    )
+    vehicle_fixed_costs: Optional[List[float]] = Field(
+        default=None,
+        examples=[[15, 5]],
+        description=(
+            "dtype: float32, fixed_cost >= 0."
+            " \n\n "
+            "Cost of each vehicle."
+            "This helps in routing where may be 2 vehicles with less cost "
+            "is effective compared to 1 vehicle with huge cost. As example "
+            "shows veh-0 (15) > veh-1 (5) + veh-2 (5)"
+        ),
+    )
+
+
+class TaskData(StrictModel):
+    task_locations: List[int] = Field(
+        ...,
+        examples=[[1, 2]],
+        description=(
+            "dtype: int32, location >= 0."
+            " \n\n "
+            "Location where the task has been requested."  # noqa
+        ),
+    )
+    task_ids: Optional[List[str]] = Field(
+        default=None,
+        examples=[["Task-A", "Task-B"]],
+        description=("List of the task ids or names provided as a string."),
+    )
+    demand: Optional[List[List[int]]] = Field(
+        default=None,
+        examples=[[[1, 1], [3, 1]]],
+        description=(
+            "dtype: int32"
+            " \n\n "
+            "Note: For this release number of demand dimensions are limited to 3."  # noqa
+            " \n\n "
+            "Lists of demands of each tasks.\n"
+            "Multiple demands can be added and each list represents "
+            "one kind of demand. Order of these demands should match the "
+            "type of vehicle capacities provided."
+            "Example: In case of two sets of demands per vehicle with 3 vehicles, "  # noqa
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [dem_1_tsk_1, dem_1_tsk_2, dem_1_tsk_3],"
+            " \n\n "
+            "        [dem_2_tsk_1, dem_2_tsk_2, dem_2_tsk_3]"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    pickup_and_delivery_pairs: Optional[List[List[int]]] = Field(
+        default=None,
+        examples=[None],
+        description=(
+            "dtype: int32, pairs >= 0."
+            " \n\n "
+            "List of Pick-up and delivery index pairs from task locations.\n"
+            "In case we have the following pick-up and delivery locations, "
+            "2->1, 4->5, 3->4, then task locations would look something like, "
+            "task_locations = [0, 2, 1, 4, 5, 3, 4] and "
+            "pick-up and delivery pairs would be index of those locations "
+            "in task location and would look like "
+            "[[1, 2], [3, 4], [5, 6]], 1 is pickup index for location 2 and "
+            "it should be delivered to location 1 which is at index 2."
+            "Example schema: "
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [pcikup_1_idx_to_task, drop_1_idx_to_task],"
+            " \n\n "
+            "        [pcikup_2_idx_to_task, drop_2_idx_to_task],"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    task_time_windows: Optional[List[List[int]]] = Field(
+        default=None,
+        examples=[[[0, 5], [3, 9]]],
+        description=(
+            "dtype: int32, time >= 0."
+            " \n\n "
+            "Earliest and Latest time windows for each tasks.\n"
+            "For example the data would look as follows, \n"
+            " \n\n "
+            "    ["
+            " \n\n "
+            "        [tsk_1_earliest, tsk_1_latest],"
+            " \n\n "
+            "        [tsk_2_earliest, tsk_2_latest]"
+            " \n\n "
+            "    ]"
+        ),
+    )
+    service_times: Optional[
+        Union[List[int], Dict[int, List[int]]]
+    ] = Field(  # noqa
+        default=None,
+        examples=[[0, 0]],
+        description=(
+            "dtype: int32, time >= 0."
+            " \n\n "
+            "Service time for each task. Accepts a list of service times for "
+            "all vehicles. In case of vehicle specific service times, accepts "
+            "a dict with key as vehicle id and value as list of service times."
+            "Example schema: In case all vehicles have same service times, "
+            " \n\n "
+            "    [tsk_1_srv_time, tsk_2_srv_time, tsk_3_srv_time]"
+            " \n\n "
+            " \n\n "
+            "In case, there are 2 vehicles and each of them have different service times,"  # noqa
+            " \n\n "
+            "    {"
+            " \n\n "
+            "        vehicle-id-1: [tsk_1_veh_1_srv_time, tsk_2_veh_1_srv_time, tsk_3_veh_1_srv_time],"  # noqa
+            " \n\n "
+            "        vehicle-id-2: [tsk_1_veh_2_srv_time, tsk_2_veh_2_srv_time, tsk_3_veh_2_srv_time],"  # noqa
+            " \n\n "
+            "    }"
+        ),
+    )
+    prizes: Optional[List[float]] = Field(
+        default=None,
+        examples=[None],
+        description=(
+            "dtype: float32, prizes >= 0."
+            " \n\n "
+            "List of values which signifies prizes that are collected "
+            "for fulfilling each task. This can be used effectively in case "
+            "solution is infeasible and need to drop few tasks to get "
+            "feasible solution. Solver will prioritize for higher prize tasks "
+        ),
+    )
+    order_vehicle_match: Optional[List[OrderVehicleMatch]] = Field(
+        default=None,
+        examples=[
+            [
+                {"order_id": 0, "vehicle_ids": [0]},
+                {"order_id": 1, "vehicle_ids": [1]},
+            ]
+        ],
+        description=(
+            "A list of order vehicle match, where the match would contain "
+            "a order id and a list of vehicle ids that can serve this order."
+        ),
+    )
+    task_time_window_types: Optional[List[str]] = Field(
+        default=None,
+        examples=[["strict", "soft", "strict", "soft"]],
+        description=(
+            "dtype: str, type in ['strict', 'soft']."
+            " \n\n "
+            "List of time window types for each task. 'strict' means the time window "
+            "must be respected (hard constraint), 'soft' means violations are allowed "
+            "but incur penalties. Must match the length of task_locations if provided."
+        ),
+    )
+    task_time_window_penalties: Optional[List[float]] = Field(
+        default=None,
+        examples=[[0.0, 100.0, 0.0, 50.0]],
+        description=(
+            "dtype: float32, penalty >= 0."
+            " \n\n "
+            "List of penalty values for violating soft time windows. Only applies to "
+            "tasks with 'soft' time window type. For 'strict' time windows, this value "
+            "is ignored. Must match the length of task_locations if provided."
+        ),
+    )
+
+
+class SolverSettingsConfig(StrictModel):
+    time_limit: Optional[float] = Field(
+        default=None, examples=[5.0], description="SolverSettings time limit"
+    )
+    objectives: Optional[Objective] = Field(
+        default=None,
+        description=(
+            "Values provided dictate the linear combination of factors used to evaluate solution quality."  # noqa
+            "Only prize will be negated, all others gets accumulated. That's why sometime you might come across negative value as solution cost."  # noqa
+        ),
+    )
+    config_file: Optional[str] = Field(
+        default=None,
+        examples=[None],
+        description=("Dump configuration information in a given file as yaml"),
+    )
+    verbose_mode: Optional[bool] = Field(
+        default=False,
+        examples=[False],
+        description=(
+            "Displaying internal information during the solver execution."
+        ),
+    )
+    error_logging: Optional[bool] = Field(
+        default=True,
+        examples=[True],
+        description=(
+            "Displaying constraint error information during the "
+            "solver execution."
+        ),
+    )
+    soft_to_hard_time_window_thresh: Optional[float] = Field(
+        default=None,
+        examples=[25.0],
+        description=(
+            "dtype: float32, threshold >= 0."
+            " \n\n "
+            "Threshold beyond which a soft time window violation is treated as a hard "
+            "(infeasible) violation. Violations below this threshold incur penalties, "
+            "while violations above this threshold make the solution infeasible."
+        ),
+    )
+
+
+class VehicleSolData(BaseModel):
+    task_id: List[str] = Field(
+        default=[],
+        description=(
+            "task_ids being assigned to vehicle along with depot and breaks"
+        ),
+    )
+    type: List[LocationTypeEnum] = Field(
+        default=[],
+        description=(
+            "Type of routing point, whether it is Depot, Waypoint - w \n"
+            "Delivery, Break, Pickup \n"
+        ),
+    )
+
+
+class InitialSolution(RootModel):
+    root: Dict[str, VehicleSolData] = Field(
+        default={},
+        examples=[
+            {
+                "veh-1": {
+                    "task_id": ["Break", "Task-A"],
+                    "type": ["Break", "Delivery"],
+                },
+                "veh-2": {
+                    "task_id": ["Depot", "Break", "Task-B", "Depot"],
+                    "type": ["Depot", "Break", "Delivery", "Depot"],
+                },
+            }
+        ],
+        description=("Details of initial solution routes"),
+    )
+
+
+# Class holds Task, Fleet and Cost information for the service endpoint for
+# Route optimization.
+
+
+class OptimizedRoutingData(StrictModel):
+    # We use a Union for top-level fields below instead of Optional
+    # so that we can allow empty list (ie []) as a null value.
+    # Pydantic v1 allowed this implicitly while v2 does not, and some legacy
+    # cuopt data files have this, so we support it for backwards compat.
+    # Any list that is not [] is screened out in the field_validator below.
+
+    cost_waypoint_graph_data: Optional[WaypointGraphData] = Field(
+        default=WaypointGraphData(),
+        examples=[None],
+        description=(
+            "Waypoint graph with weights as cost to travel from A to B \n"
+            "and B to A. If there are different types of vehicles \n"
+            "they can be provided with key value pair \n"
+            "where key is vehicle-type and value is the graph. Value of \n"
+            "vehicle type should be within [0, 255]"
+        ),
+    )
+    travel_time_waypoint_graph_data: Optional[WaypointGraphData] = Field(
+        default=WaypointGraphData(),
+        examples=[None],
+        description=(
+            "Waypoint graph with weights as time to travel from A to B \n"
+            "and B to A. If there are different types of vehicles \n"
+            "they can be provided with key value pair \n"
+            "where key is vehicle-type and value is the graph. Value of \n"
+            "vehicle type should be within [0, 255]"
+        ),
+    )
+    cost_matrix_data: Optional[CostMatrices] = Field(
+        default=CostMatrices(),
+        examples=[
+            {
+                "cost_matrix": {
+                    1: [[0, 1, 1], [1, 0, 1], [1, 1, 0]],
+                    2: [[0, 1, 1], [1, 0, 1], [1, 2, 0]],
+                }
+            }
+        ],
+        description=(
+            "Sqaure matrix with cost to travel from A to B and B to A. \n"
+            "Cost is defined by user, it can be distance/fuel/time or \n"
+            "a function of several factors."
+            "If there are different types of vehicles which have different \n"
+            "cost matrices, they can be provided with key value pair \n"
+            "where key is vehicle-type and value is cost matrix. Value of \n"
+            "vehicle type should be within [0, 255]"
+        ),
+    )
+    travel_time_matrix_data: Optional[CostMatrices] = Field(
+        default=CostMatrices(),
+        examples=[
+            {
+                "cost_matrix": {
+                    1: [[0, 1, 1], [1, 0, 1], [1, 1, 0]],
+                    2: [[0, 1, 1], [1, 0, 1], [1, 2, 0]],
+                }
+            }
+        ],
+        description=(
+            "Sqaure matrix with time to travel from A to B and B to A. \n"
+            "If there are different types of vehicles which have different \n"
+            "travel time matrices, they can be provided with key value pair \n"
+            "where key is vehicle-type and value is time matrix. Value of \n"
+            "vehicle type should be within [0, 255]"
+        ),
+    )
+    fleet_data: FleetData = Field(..., description=("All Fleet information"))
+    task_data: TaskData = Field(..., description=("All Task information"))
+    initial_solution: Optional[List[InitialSolution]] = None
+    solver_config: Optional[SolverSettingsConfig] = None
+
+    # We need this validator to preserve backward compat for passing {}
+    # for data in the local file case for get_routes
+    # Without this the value must be None, which is a client change
+    @root_validator(skip_on_failure=True, pre=True)
+    def allow_empty_dict(cls, values):
+        if values == {}:
+            return {
+                "travel_time_waypoint_graph_data": None,
+                "cost_waypoint_graph_data": None,
+                "travel_time_waypoint_graph_data": None,
+                "cost_matrix_data": None,
+                "travel_time_matrix_data": None,
+                "fleet_data": FleetData(vehicle_locations=[]),
+                "task_data": TaskData(task_locations=[]),
+                "solver_config": None,
+            }
+        return values
+
+
+class VehicleData(StrictModel):
+    task_id: List[str] = Field(
+        default=[],
+        description=(
+            "task_ids being assigned to vehicle along with depot and breaks"
+        ),
+    )
+    arrival_stamp: List[float] = Field(
+        default=[], description=("arrival stamps at each task locations")
+    )
+    route: List[int] = Field(
+        default=[],
+        description=(
+            "Route indices as per waypoint graph or cost matrix provided"
+        ),
+    )
+    type: List[LocationTypeEnum] = Field(
+        default=[],
+        description=(
+            "Type of routing point, whether it is Depot, Waypoint - w \n"
+            "Delivery, Break, Pickup \n"
+        ),
+    )
+
+
+class DroppedTasks(StrictModel):
+    task_id: Union[List[int], List[str]] = Field(
+        default=[],
+        description=(
+            "With prize collection enabled, there is a chance of "
+            "tasks being dropped to make a feasible solution. "
+            "This list contains infeasible task ids which are dropped."
+        ),
+    )
+
+    task_index: List[int] = Field(
+        default=[],
+        description=(
+            "With prize collection enabled, there is a chance of "
+            "tasks being dropped to make a feasible solution. "
+            "This list contains infeasible task indices into task locations which are dropped."  # noqa
+        ),
+    )
+
+
+class FeasibleResultData(StrictModel):
+    status: int = Field(
+        default=0,
+        examples=[0],
+        description=(
+            "0 - Solution is available \n"
+            "1 - Infeasible solution is available \n"
+        ),
+    )
+    num_vehicles: int = Field(
+        default=-1,
+        examples=[2],
+        description="Number of vehicle being used for the solution",
+    )
+    solution_cost: float = Field(
+        default=-1.0, examples=[2], description="Total cost of the solution"
+    )
+    objective_values: Dict[str, float] = Field(
+        default={},
+        examples=[
+            {
+                "objective_values": {
+                    "cost": 100.0,
+                    "travel_time": 245.0,
+                    "prize": -1000.0,
+                }
+            }
+        ],
+        description=("Individual objective values"),
+    )
+    vehicle_data: Dict[str, VehicleData] = Field(
+        default={},
+        examples=[
+            {
+                "vehicle_data": {
+                    "veh-1": {
+                        "task_id": ["Break", "Task-A"],
+                        "arrival_stamp": [1, 2],
+                        "route": [1, 1],
+                        "type": ["Break", "Delivery"],
+                    },
+                    "veh-2": {
+                        "task_id": ["Depot", "Break", "Task-B", "Depot"],
+                        "arrival_stamp": [2, 2, 4, 5],
+                        "route": [0, 0, 2, 0],
+                        "type": ["Depot", "Break", "Delivery", "Depot"],
+                    },
+                }
+            }
+        ],
+        description=("All the details of vehicle routes and timestamps"),
+    )
+    initial_solutions: List[str] = Field(
+        default=[],
+        description=(
+            "Indicates whether each initial solution was accepted, not accepted or "  # noqa
+            "not evaluated by the solver in case initial solutions were provided in request."  # noqa
+        ),
+    )
+    dropped_tasks: DroppedTasks = Field(
+        default=[],
+        description=(
+            "Contains details of dropped tasks when prize collection is enabled"  # noqa
+        ),
+    )
+    msg: Optional[str] = Field(
+        default="", description="Any information pertaining to the run."
+    )
+
+
+class InfeasibleResultData(StrictModel):
+    status: int = Field(
+        default=1,
+        examples=[1],
+        description=("1 - Infeasible solution is available \n"),
+    )
+    num_vehicles: int = Field(
+        default=-1,
+        examples=[2],
+        description="Number of vehicle being used for the solution",
+    )
+    solution_cost: float = Field(
+        default=-1.0, examples=[2], description="Total cost of the solution"
+    )
+    objective_values: Dict[str, float] = Field(
+        default={},
+        examples=[
+            {
+                "objective_values": {
+                    "cost": 100.0,
+                    "travel_time": 245.0,
+                    "prize": -1000.0,
+                }
+            }
+        ],
+        description=("Individual objective values"),
+    )
+    vehicle_data: Dict[str, VehicleData] = Field(
+        default={},
+        examples=[
+            {
+                "vehicle_data": {
+                    "veh-1": {
+                        "task_id": ["Break", "Task-A"],
+                        "arrival_stamp": [1, 2],
+                        "route": [1, 1],
+                        "type": ["Break", "Delivery"],
+                    },
+                    "veh-2": {
+                        "task_id": ["Depot", "Break", "Task-B", "Depot"],
+                        "arrival_stamp": [2, 2, 4, 5],
+                        "route": [0, 0, 2, 0],
+                        "type": ["Depot", "Break", "Delivery", "Depot"],
+                    },
+                }
+            }
+        ],
+        description=("All the details of vehicle routes and timestamps"),
+    )
+    initial_solutions: List[str] = Field(
+        default=[],
+        description=(
+            "Indicates whether each initial solution was accepted, not accepted or "  # noqa
+            "not evaluated by the solver in case initial solutions were provided in request."  # noqa
+        ),
+    )
+    dropped_tasks: DroppedTasks = Field(
+        default=[],
+        description=(
+            "Note: This is just a place holder since there will not be any dropped tasks in infeasible solution."  # noqa
+            "Contains details of dropped tasks when prize collection is enabled."  # noqa
+        ),
+    )
+    msg: Optional[str] = Field(
+        default="", description="Any information pertaining to the run."
+    )
+
+
+class FeasibleSolve(StrictModel):
+    solver_response: FeasibleResultData = Field(
+        default=FeasibleResultData(), description="Feasible solution"
+    )
+    perf_times: Optional[Dict] = Field(
+        default=None, description=("Etl and Solve times of the solve call")
+    )
+
+
+class InFeasibleSolve(StrictModel):
+    solver_infeasible_response: InfeasibleResultData = Field(
+        default=InfeasibleResultData(),
+        description=(
+            "Infeasible solution, this can mean the problem itself is infeasible or "  # noqa
+            "solver requires more time to find a solution. Setting default solve time is "  # noqa
+            "suggested in case you are not aware of the expected time."
+        ),
+    )
+    perf_times: Optional[Dict] = Field(
+        default=None, description=("Etl and Solve times of the solve call")
+    )
+
+
+vrp_example_data = {
+    "cost_waypoint_graph_data": None,
+    "travel_time_waypoint_graph_data": None,
+    "cost_matrix_data": {
+        "data": {
+            "1": [[0, 1, 1], [1, 0, 1], [1, 1, 0]],
+            "2": [[0, 1, 1], [1, 0, 1], [1, 2, 0]],
+        }
+    },
+    "travel_time_matrix_data": {
+        "data": {
+            "1": [[0, 1, 1], [1, 0, 1], [1, 1, 0]],
+            "2": [[0, 1, 1], [1, 0, 1], [1, 2, 0]],
+        }
+    },
+    "fleet_data": {
+        "vehicle_locations": [[0, 0], [0, 0]],
+        "vehicle_ids": ["veh-1", "veh-2"],
+        "capacities": [[2, 2], [4, 1]],
+        "vehicle_time_windows": [[0, 10], [0, 10]],
+        "vehicle_break_time_windows": [[[1, 2], [2, 3]]],
+        "vehicle_break_durations": [[1, 1]],
+        "vehicle_break_locations": [0, 1],
+        "vehicle_types": [1, 2],
+        "vehicle_order_match": [
+            {"order_ids": [0], "vehicle_id": 0},
+            {"order_ids": [1], "vehicle_id": 1},
+        ],
+        "skip_first_trips": [True, False],
+        "drop_return_trips": [True, False],
+        "min_vehicles": 2,
+        "vehicle_max_costs": [7, 10],
+        "vehicle_max_times": [7, 10],
+        "vehicle_fixed_costs": [15, 5],
+    },
+    "task_data": {
+        "task_locations": [1, 2],
+        "task_ids": ["Task-A", "Task-B"],
+        "demand": [[1, 1], [3, 1]],
+        "pickup_and_delivery_pairs": None,
+        "task_time_windows": [[0, 5], [3, 9]],
+        "service_times": [0, 0],
+        "prizes": None,
+        "order_vehicle_match": [
+            {"order_id": 0, "vehicle_ids": [0]},
+            {"order_id": 1, "vehicle_ids": [1]},
+        ],
+    },
+    "solver_config": {
+        "time_limit": 1,
+        "objectives": {
+            "cost": 1,
+            "travel_time": 0,
+            "variance_route_size": 0,
+            "variance_route_service_time": 0,
+            "prize": 0,
+            "vehicle_fixed_cost": 0,
+        },
+        "config_file": None,
+        "verbose_mode": False,
+        "error_logging": True,
+    },
 }
 
+# fmt: off
+vrp_msgpack_example_data = "\x85\xb0cost_matrix_data\x81\xa4data\x82\xa11\x93\x93\x00\x01\x01\x93\x01\x00\x01\x93\x01\x01\x00\xa12\x93\x93\x00\x01\x01\x93\x01\x00\x01\x93\x01\x02\x00\xb7travel_time_matrix_data\x81\xa4data\x82\xa11\x93\x93\x00\x01\x01\x93\x01\x00\x01\x93\x01\x01\x00\xa12\x93\x93\x00\x01\x01\x93\x01\x00\x01\x93\x01\x02\x00\xaafleet_data\x8f\xb1vehicle_locations\x92\x92\x00\x00\x92\x00\x00\xabvehicle_ids\x92\xa5veh-1\xa5veh-2\xaacapacities\x92\x92\x02\x02\x92\x04\x01\xb4vehicle_time_windows\x92\x92\x00\n\x92\x00\n\xbavehicle_break_time_windows\x91\x92\x92\x01\x02\x92\x02\x03\xb7vehicle_break_durations\x91\x92\x01\x01\xb7vehicle_break_locations\x92\x00\x01\xadvehicle_types\x92\x01\x02\xb3vehicle_order_match\x92\x82\xa9order_ids\x91\x00\xaavehicle_id\x00\x82\xa9order_ids\x91\x01\xaavehicle_id\x01\xb0skip_first_trips\x92\xc3\xc2\xb1drop_return_trips\x92\xc3\xc2\xacmin_vehicles\x02\xb1vehicle_max_costs\x92\x07\n\xb1vehicle_max_times\x92\x07\n\xb3vehicle_fixed_costs\x92\x0f\x05\xa9task_data\x86\xaetask_locations\x92\x01\x02\xa8task_ids\x92\xa6Task-A\xa6Task-B\xa6demand\x92\x92\x01\x01\x92\x03\x01\xb1task_time_windows\x92\x92\x00\x05\x92\x03\t\xadservice_times\x92\x00\x00\xb3order_vehicle_match\x92\x82\xa8order_id\x00\xabvehicle_ids\x91\x00\x82\xa8order_id\x01\xabvehicle_ids\x91\x01\xadsolver_config\x84\xaatime_limit\x01\xaaobjectives\x86\xa4cost\x01\xabtravel_time\x00\xb3variance_route_size\x00\xbbvariance_route_service_time\x00\xa5prize\x00\xb2vehicle_fixed_cost\x00\xacverbose_mode\xc2\xaderror_logging\xc3".encode("unicode_escape") # noqa
+# fmt: on
 
-class OptimizationDataModel:
-    def __init__(self) -> None:
-        self.waypoint_graph = {}
 
-        self.travel_time_waypoint_graph = {}
+managed_vrp_example_data = {
+    "action": "cuOpt_OptimizedRouting",
+    "data": vrp_example_data,
+    "client_version": __version_major_minor__,
+}
 
-        self.locations = []
-
-        self.is_route_detail_set = False
-
-        self.cost_matrix = {}
-        self.travel_time_matrix = {}
-
-        self.fleet_data = self.reset_fleet_data()
-
-        self.task_data = self.reset_task_data()
-
-        self.initial_solution = []
-
-        self.solver_config = self.reset_solver_config()
-
-    # CLASS UTILITY FUNCTIONS
-    def reset_fleet_data(self):
-        return {
-            "vehicle_ids": None,
-            "vehicle_locations": None,
-            "capacities": None,
-            "vehicle_time_windows": None,
-            "vehicle_break_time_windows": None,
-            "vehicle_break_durations": None,
-            "vehicle_break_locations": None,
-            "vehicle_breaks": None,
-            "vehicle_types": None,
-            "vehicle_order_match": None,
-            "skip_first_trips": None,
-            "drop_return_trips": None,
-            "min_vehicles": None,
-            "vehicle_max_costs": None,
-            "vehicle_max_times": None,
-            "vehicle_fixed_costs": None,
-        }
-
-    def reset_task_data(self):
-        return {
-            "task_locations": None,
-            "task_ids": None,
-            "demand": None,
-            "pickup_and_delivery_pairs": None,
-            "task_time_windows": None,
-            "service_times": None,
-            "prizes": None,
-            "order_vehicle_match": None,
-            "task_time_window_types": None,
-            "task_time_window_penalties": None,
-        }
-
-    def reset_solver_config(self):
-        return {
-            "time_limit": None,
-            "objectives": None,
-            "objective_weights": None,
-            "config_file": None,
-            "verbose_mode": None,
-            "error_logging": None,
-            "soft_to_hard_time_window_thresh": None,
-        }
-
-    def get_cost_waypoint_graph(self):
-        cost_waypoint_graph_data = {}
-        for v_type, graph in self.waypoint_graph.items():
-            cost_waypoint_graph_data[v_type] = {
-                key: (value.tolist() if value is not None else None)
-                for key, value in graph.items()
+# cut and pasted from actual run of VRP example data.
+# don't reformat :)
+vrp_response = {
+    "value": {
+        "response": {
+            "solver_response": {
+                "status": 0,
+                "num_vehicles": 2,
+                "solution_cost": 2.0,
+                "objective_values": {"cost": 2.0},
+                "vehicle_data": {
+                    "veh-1": {
+                        "task_id": ["Break", "Task-A"],
+                        "arrival_stamp": [1.0, 2.0],
+                        "type": ["Break", "Delivery"],
+                        "route": [1, 1],
+                    },
+                    "veh-2": {
+                        "task_id": ["Depot", "Break", "Task-B", "Depot"],
+                        "arrival_stamp": [2.0, 2.0, 4.0, 5.0],
+                        "type": ["Depot", "Break", "Delivery", "Depot"],
+                        "route": [0, 0, 2, 0],
+                    },
+                },
+                "dropped_tasks": {"task_id": [], "task_index": []},
             }
-        return cost_waypoint_graph_data
-
-    def get_travel_time_waypoint_graph(self):
-        cost_waypoint_graph_data = {}
-        for v_type, graph in self.travel_time_waypoint_graph.items():
-            cost_waypoint_graph_data[v_type] = {
-                key: (value.tolist() if value is not None else None)
-                for key, value in graph.items()
-            }
-        return cost_waypoint_graph_data
-
-    def get_cost_matrix(self):
-        return {
-            key: value.to_numpy().tolist()
-            for key, value in self.cost_matrix.items()
-        }
-
-    def get_travel_time_matrix(self):
-        return {
-            key: value.to_numpy().tolist()
-            for key, value in self.travel_time_matrix.items()
-        }
-
-    def get_fleet_data(self):
-        return {
-            "vehicle_ids": self.fleet_data["vehicle_ids"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["vehicle_ids"] is not None
-            else None,
-            "vehicle_locations": self.fleet_data["vehicle_locations"]
-            .to_numpy()
-            .tolist()
-            if self.fleet_data["vehicle_locations"] is not None
-            else None,
-            "capacities": self.fleet_data["capacities"].T.to_numpy().tolist()
-            if self.fleet_data["capacities"] is not None
-            else None,
-            "vehicle_max_costs": self.fleet_data["vehicle_max_costs"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["vehicle_max_costs"] is not None
-            else None,
-            "vehicle_max_times": self.fleet_data["vehicle_max_times"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["vehicle_max_times"] is not None
-            else None,
-            "vehicle_fixed_costs": self.fleet_data["vehicle_fixed_costs"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["vehicle_fixed_costs"] is not None
-            else None,
-            "vehicle_time_windows": self.fleet_data["vehicle_time_windows"]
-            .to_numpy()
-            .tolist()
-            if self.fleet_data["vehicle_time_windows"] is not None
-            else None,
-            "vehicle_break_time_windows": [
-                data.to_numpy().tolist()
-                for data in self.fleet_data[
-                    "vehicle_break_time_windows"
-                ]  # noqa
-            ]
-            if self.fleet_data["vehicle_break_time_windows"] is not None
-            else None,
-            "vehicle_break_durations": [
-                data.to_arrow().to_pylist()
-                for data in self.fleet_data["vehicle_break_durations"]  # noqa
-            ]
-            if self.fleet_data["vehicle_break_durations"] is not None
-            else None,
-            "vehicle_break_locations": self.fleet_data[
-                "vehicle_break_locations"
-            ]  # noqa
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["vehicle_break_locations"] is not None
-            else None,
-            "vehicle_breaks": self.fleet_data["vehicle_breaks"],
-            "vehicle_order_match": self.fleet_data["vehicle_order_match"],
-            "skip_first_trips": self.fleet_data["skip_first_trips"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["skip_first_trips"] is not None
-            else None,
-            "drop_return_trips": self.fleet_data["drop_return_trips"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["drop_return_trips"] is not None
-            else None,
-            "vehicle_types": self.fleet_data["vehicle_types"]
-            .to_arrow()
-            .to_pylist()
-            if self.fleet_data["vehicle_types"] is not None
-            else None,
-            "min_vehicles": self.fleet_data["min_vehicles"],
-        }
-
-    def get_task_data(self):
-        return {
-            "task_ids": self.task_data["task_ids"].to_arrow().to_pylist()
-            if self.task_data["task_ids"] is not None
-            else None,
-            "task_locations": self.task_data["task_locations"]
-            .to_arrow()
-            .to_pylist()
-            if self.task_data["task_locations"] is not None
-            else None,
-            "demand": self.task_data["demand"].T.to_numpy().tolist()
-            if self.task_data["demand"] is not None
-            else None,
-            "pickup_and_delivery_pairs": self.task_data[
-                "pickup_and_delivery_pairs"
-            ]
-            .to_numpy()
-            .tolist()
-            if self.task_data["pickup_and_delivery_pairs"] is not None
-            else None,
-            "task_time_windows": self.task_data["task_time_windows"]
-            .to_numpy()
-            .tolist()
-            if self.task_data["task_time_windows"] is not None
-            else None,
-            "service_times": self.task_data["service_times"],
-            "prizes": self.task_data["prizes"].to_arrow().to_pylist()
-            if self.task_data["prizes"] is not None
-            else None,
-            "order_vehicle_match": self.task_data["order_vehicle_match"],
-        }
-
-    def get_solver_config_data(self):
-        solver_config = self.solver_config.copy()
-
-        if solver_config["objectives"] is not None:
-            objectives = solver_config["objectives"].to_arrow().to_pylist()
-            objective_weights = (
-                solver_config["objective_weights"].to_arrow().to_pylist()
-            )  # noqa
-
-            solver_config["objectives"] = {
-                objective_names[objectives[i]]: objective_weights[i]
-                for i in range(len(objectives))
-            }
-        # Weights have been already added to objectives if they were available
-        del solver_config["objective_weights"]
-
-        return solver_config
-
-    def get_optimization_data(self):
-        return {
-            "cost_waypoint_graph": self.get_cost_waypoint_graph(),
-            "travel_time_waypoint_graph": self.get_travel_time_waypoint_graph(),  # noqa
-            "cost_matrix": self.get_cost_matrix(),
-            "travel_time_matrix": self.get_travel_time_matrix(),
-            "fleet_data": self.get_fleet_data(),
-            "task_data": self.get_task_data(),
-            "solver_config": self.get_solver_config_data(),
-        }
-
-    # WAYPOINT GRAPH DATA
-    def set_cost_waypoint_graph(self, waypoint_graph):
-        cost_waypoint_graph_data = {}
-        for v_type, graph in waypoint_graph.items():
-            weights = get_none_for_empty_list(graph.weights)
-            cost_waypoint_graph_data[v_type] = {
-                "edges": np.array(graph.edges),
-                "offsets": np.array(graph.offsets),
-                "weights": np.array(weights)
-                if weights is not None
-                else weights,
-            }
-
-        is_valid = validate_waypoint_graph(
-            cost_waypoint_graph_data,
-            is_travel_time=False,
-            updating=False,
-            comparison_waypoint_graph=None,
-        )
-
-        if is_valid[0]:
-            self.is_route_detail_set = True
-            self.waypoint_graph = cost_waypoint_graph_data
-
-        return is_valid
-
-    def update_cost_waypoint_graph_weights(self, waypoint_graph_weights):
-        cost_waypoint_graph_data = {}
-        for v_type, weights in waypoint_graph_weights.items():
-            weights = get_none_for_empty_list(weights)
-            cost_waypoint_graph_data[v_type] = {
-                "edges": None,
-                "offsets": None,
-                "weights": np.array(weights)
-                if weights is not None
-                else weights,
-            }
-
-        is_valid = validate_waypoint_graph(
-            cost_waypoint_graph_data,
-            is_travel_time=False,
-            updating=True,
-            comparison_waypoint_graph=self.waypoint_graph,
-        )
-
-        if is_valid[0]:
-            for v_type, weights in waypoint_graph_weights.items():
-                self.waypoint_graph[v_type][
-                    "weights"
-                ] = waypoint_graph_weights[
-                    v_type
-                ]  # noqa
-
-        return is_valid
-
-    def set_travel_time_waypoint_graph(self, travel_time_waypoint_graph):
-        travel_time_waypoint_graph_data = {}
-        for v_type, graph in travel_time_waypoint_graph.items():
-            weights = get_none_for_empty_list(graph.weights)
-            travel_time_waypoint_graph_data[v_type] = {
-                "edges": np.array(graph.edges),
-                "offsets": np.array(graph.offsets),
-                "weights": np.array(weights)
-                if weights is not None
-                else weights,
-            }
-
-        is_valid = validate_waypoint_graph(
-            travel_time_waypoint_graph_data,
-            is_travel_time=True,
-            updating=False,
-            comparison_waypoint_graph=self.waypoint_graph,
-        )
-
-        if is_valid[0]:
-            self.is_route_detail_set = True
-            self.travel_time_waypoint_graph = travel_time_waypoint_graph_data
-
-        return is_valid
-
-    def update_travel_time_waypoint_graph_weights(
-        self, travel_time_waypoint_graph_weights
-    ):
-        travel_time_waypoint_graph_data = {}
-        for (
-            v_type,
-            travel_time_weights,
-        ) in travel_time_waypoint_graph_weights.items():  # noqa
-            travel_time_weights = get_none_for_empty_list(travel_time_weights)
-            travel_time_waypoint_graph_data[v_type] = {
-                "edges": None,
-                "offsets": None,
-                "weights": np.array(travel_time_weights)
-                if travel_time_weights is not None
-                else travel_time_weights,  # noqa
-            }
-
-        is_valid = validate_waypoint_graph(
-            travel_time_waypoint_graph_data,
-            is_travel_time=True,
-            updating=True,
-            comparison_waypoint_graph=self.travel_time_waypoint_graph,
-        )
-
-        if is_valid[0]:
-            for v_type, weights in travel_time_waypoint_graph_weights.items():
-                self.travel_time_waypoint_graph[v_type][
-                    "weights"
-                ] = travel_time_waypoint_graph_weights[
-                    v_type
-                ]  # noqa
-
-        return is_valid
-
-    # COST MATRIX DATA
-    def set_cost_matrix(self, cost_matrix):
-        is_valid = validate_cost_matrix(
-            cost_matrix,
-            is_travel_time=False,
-            updating=False,
-            comparison_matrix=None,
-        )
-        if is_valid[0]:
-            self.is_route_detail_set = True
-            self.cost_matrix = {}
-            for v_type, matrix in cost_matrix.items():
-                np_cost_matrix = np.array(matrix, dtype=np.float32)
-                self.cost_matrix[v_type] = cudf.DataFrame(np_cost_matrix)
-
-        return is_valid
-
-    def update_cost_matrix(self, cost_matrix):
-        is_valid = validate_cost_matrix(
-            cost_matrix,
-            is_travel_time=False,
-            updating=True,
-            comparison_matrix=self.cost_matrix,
-        )
-        if is_valid[0]:
-            self.is_route_detail_set = True
-            for v_type, matrix in cost_matrix.items():
-                np_cost_matrix = np.array(matrix, dtype=np.float32)
-                self.cost_matrix[v_type] = cudf.DataFrame(np_cost_matrix)
-
-        return is_valid
-
-    def set_travel_time_matrix(self, travel_time_matrix):
-        is_valid = validate_cost_matrix(
-            travel_time_matrix,
-            is_travel_time=True,
-            updating=False,
-            comparison_matrix=self.cost_matrix,
-        )
-        if is_valid[0]:
-            self.travel_time_matrix = {}
-            for v_type, matrix in travel_time_matrix.items():
-                np_travel_time_matrix = np.array(matrix, dtype=np.float32)
-                self.travel_time_matrix[v_type] = cudf.DataFrame(
-                    np_travel_time_matrix
-                )
-
-        return is_valid
-
-    def update_travel_time_matrix(self, travel_time_matrix):
-        is_valid = validate_cost_matrix(
-            travel_time_matrix,
-            is_travel_time=True,
-            updating=True,
-            comparison_matrix=self.travel_time_matrix,
-        )
-        if is_valid[0]:
-            for v_type, matrix in travel_time_matrix.items():
-                np_travel_time_matrix = np.array(matrix, dtype=np.float32)
-                self.travel_time_matrix[v_type] = cudf.DataFrame(
-                    np_travel_time_matrix
-                )
-
-        return is_valid
-
-    # FLEET DATA
-    def set_fleet_data(
-        self,
-        vehicle_ids,
-        vehicle_locations,
-        capacities,
-        vehicle_time_windows,
-        vehicle_breaks,
-        vehicle_break_time_windows,
-        vehicle_break_durations,
-        vehicle_break_locations,
-        vehicle_types,
-        vehicle_order_match,
-        skip_first_trips,
-        drop_return_trips,
-        min_vehicles,
-        vehicle_max_costs,
-        vehicle_max_times,
-        vehicle_fixed_costs,
-    ):
-        if not self.is_route_detail_set:
-            return (
-                False,
-                "Cost matrix/Waypoint graph needs to be set before setting fleet data",  # noqa
-            )
-        vehicle_types_dict = {}
-        vehicle_types_dict["Cost Matrix"] = list(self.cost_matrix.keys())
-        vehicle_types_dict["Travel Time Matrix"] = list(
-            self.travel_time_matrix.keys()
-        )
-        vehicle_types_dict["Waypoint Graph"] = list(self.waypoint_graph.keys())
-        vehicle_types_dict["Travel Time Waypoint Graph"] = list(
-            self.travel_time_waypoint_graph.keys()
-        )
-
-        vehicle_ids = get_none_for_empty_list(vehicle_ids)
-        capacities = get_none_for_empty_list(capacities)
-        vehicle_max_costs = get_none_for_empty_list(vehicle_max_costs)
-        vehicle_max_times = get_none_for_empty_list(vehicle_max_times)
-        vehicle_fixed_costs = get_none_for_empty_list(vehicle_fixed_costs)
-        vehicle_time_windows = get_none_for_empty_list(vehicle_time_windows)
-        vehicle_break_time_windows = get_none_for_empty_list(
-            vehicle_break_time_windows
-        )
-        vehicle_break_durations = get_none_for_empty_list(
-            vehicle_break_durations
-        )
-        vehicle_break_locations = get_none_for_empty_list(
-            vehicle_break_locations
-        )
-        vehicle_types = get_none_for_empty_list(vehicle_types)
-        vehicle_order_match = get_none_for_empty_list(vehicle_order_match)
-        skip_first_trips = get_none_for_empty_list(skip_first_trips)
-        drop_return_trips = get_none_for_empty_list(drop_return_trips)
-
-        is_valid = validate_fleet_data(
-            vehicle_ids,
-            vehicle_locations,
-            capacities,
-            vehicle_time_windows,
-            vehicle_breaks,
-            vehicle_break_time_windows,
-            vehicle_break_durations,
-            vehicle_break_locations,
-            vehicle_types,
-            vehicle_types_dict,
-            vehicle_order_match,
-            skip_first_trips,
-            drop_return_trips,
-            min_vehicles,
-            vehicle_max_costs,
-            vehicle_max_times,
-            vehicle_fixed_costs,
-            updating=False,
-            comparison_locations=None,
-        )
-
-        if is_valid[0]:
-            if vehicle_ids is not None:
-                self.fleet_data["vehicle_ids"] = cudf.Series(vehicle_ids)
-            else:
-                self.fleet_data["vehicle_ids"] = cudf.Series(
-                    range(len(vehicle_locations))
-                )
-            if vehicle_locations is not None:
-                self.fleet_data["vehicle_locations"] = cudf.DataFrame(
-                    vehicle_locations,
-                    columns=["start_location", "end_location"],
-                    dtype=np.int32,
-                )
-            if capacities:
-                self.fleet_data["capacities"] = cudf.DataFrame(
-                    capacities, dtype=np.int32
-                ).T
-            if vehicle_max_costs is not None:
-                self.fleet_data["vehicle_max_costs"] = cudf.Series(
-                    vehicle_max_costs, dtype=np.float32
-                )
-            if vehicle_max_times is not None:
-                self.fleet_data["vehicle_max_times"] = cudf.Series(
-                    vehicle_max_times, dtype=np.float32
-                )
-            if vehicle_fixed_costs is not None:
-                self.fleet_data["vehicle_fixed_costs"] = cudf.Series(
-                    vehicle_fixed_costs, dtype=np.float32
-                )
-            if vehicle_time_windows:
-                self.fleet_data["vehicle_time_windows"] = cudf.DataFrame(
-                    vehicle_time_windows,
-                    columns=["earliest", "latest"],
-                    dtype=np.int32,
-                )
-            if skip_first_trips:
-                self.fleet_data["skip_first_trips"] = cudf.Series(
-                    skip_first_trips, dtype=bool
-                )
-            if drop_return_trips:
-                self.fleet_data["drop_return_trips"] = cudf.Series(
-                    drop_return_trips, dtype=bool
-                )
-            if vehicle_break_time_windows and vehicle_break_durations:
-                self.fleet_data["vehicle_break_time_windows"] = [
-                    cudf.DataFrame(
-                        val, columns=["earliest", "latest"], dtype=np.int32
-                    )
-                    for val in vehicle_break_time_windows
-                ]
-
-                self.fleet_data["vehicle_break_durations"] = [
-                    cudf.Series(val, dtype=np.int32)
-                    for val in vehicle_break_durations
-                ]
-            if vehicle_breaks is not None:
-                self.fleet_data["vehicle_breaks"] = [
-                    {
-                        "vehicle_id": data.vehicle_id,
-                        "earliest": data.earliest,
-                        "latest": data.latest,
-                        "duration": data.duration,
-                        "locations": data.locations,
-                    }
-                    for data in vehicle_breaks
-                ]
-            if vehicle_order_match is not None:
-                self.fleet_data["vehicle_order_match"] = [
-                    {
-                        "vehicle_id": data.vehicle_id,
-                        "order_ids": data.order_ids,
-                    }
-                    for data in vehicle_order_match
-                ]
-            if vehicle_break_locations is not None:
-                self.fleet_data["vehicle_break_locations"] = cudf.Series(
-                    vehicle_break_locations, dtype=np.int32
-                )  # noqa
-            if vehicle_types is not None:
-                self.fleet_data["vehicle_types"] = cudf.Series(
-                    vehicle_types, dtype=np.uint8
-                )
-            if min_vehicles is not None:
-                self.fleet_data["min_vehicles"] = min_vehicles
-
-        return is_valid
-
-    def update_fleet_data(
-        self,
-        vehicle_ids,
-        vehicle_locations,
-        capacities,
-        vehicle_time_windows,
-        vehicle_breaks,
-        vehicle_break_time_windows,
-        vehicle_break_durations,
-        vehicle_break_locations,
-        vehicle_types,
-        vehicle_order_match,
-        skip_first_trips,
-        drop_return_trips,
-        min_vehicles,
-        vehicle_max_costs,
-        vehicle_max_times,
-        vehicle_fixed_costs,
-    ):
-        if not self.is_route_detail_set:
-            return (
-                False,
-                "Cost matrix/Waypoint graph needs to be set before updating fleet data",  # noqa
-            )
-
-        vehicle_types_dict = {}
-        vehicle_types_dict["Cost Matrix"] = list(self.cost_matrix.keys())
-        vehicle_types_dict["Travel Time Matrix"] = list(
-            self.travel_time_matrix.keys()
-        )
-        vehicle_types_dict["Waypoint Graph"] = list(self.waypoint_graph.keys())
-        vehicle_types_dict["Travel Time Waypoint Graph"] = list(
-            self.travel_time_waypoint_graph.keys()
-        )
-
-        vehicle_ids = get_none_for_empty_list(vehicle_ids)
-        vehicle_locations = get_none_for_empty_list(vehicle_locations)
-        capacities = get_none_for_empty_list(capacities)
-        vehicle_max_costs = get_none_for_empty_list(vehicle_max_costs)
-        vehicle_max_times = get_none_for_empty_list(vehicle_max_times)
-        vehicle_fixed_costs = get_none_for_empty_list(vehicle_fixed_costs)
-        vehicle_time_windows = get_none_for_empty_list(vehicle_time_windows)
-        skip_first_trips = get_none_for_empty_list(skip_first_trips)
-        vehicle_break_time_windows = get_none_for_empty_list(
-            vehicle_break_time_windows
-        )
-        vehicle_break_durations = get_none_for_empty_list(
-            vehicle_break_durations
-        )
-        vehicle_break_locations = get_none_for_empty_list(
-            vehicle_break_locations
-        )
-        vehicle_types = get_none_for_empty_list(vehicle_types)
-        vehicle_order_match = get_none_for_empty_list(vehicle_order_match)
-        skip_first_trips = get_none_for_empty_list(skip_first_trips)
-        drop_return_trips = get_none_for_empty_list(drop_return_trips)
-
-        is_valid = validate_fleet_data(
-            vehicle_ids,
-            vehicle_locations,
-            capacities,
-            vehicle_time_windows,
-            vehicle_breaks,
-            vehicle_break_time_windows,
-            vehicle_break_durations,
-            vehicle_break_locations,
-            vehicle_types,
-            vehicle_types_dict,
-            vehicle_order_match,
-            skip_first_trips,
-            drop_return_trips,
-            min_vehicles,
-            vehicle_max_costs,
-            vehicle_max_times,
-            updating=True,
-            comparison_locations=self.fleet_data["vehicle_locations"],
-        )
-
-        if is_valid[0]:
-            if vehicle_ids is not None:
-                self.fleet_data["vehicle_ids"] = cudf.Series(vehicle_ids)
-            if vehicle_locations is not None:
-                self.fleet_data["vehicle_locations"] = cudf.DataFrame(
-                    vehicle_locations,
-                    columns=["start_location", "end_location"],
-                    dtype=np.int32,
-                )
-            if capacities:
-                self.fleet_data["capacities"] = cudf.DataFrame(
-                    capacities, dtype=np.int32
-                ).T
-            if vehicle_max_costs is not None:
-                self.fleet_data["vehicle_max_costs"] = cudf.Series(
-                    vehicle_max_costs, dtype=np.float32
-                )
-            if vehicle_max_times is not None:
-                self.fleet_data["vehicle_max_times"] = cudf.Series(
-                    vehicle_max_times, dtype=np.float32
-                )
-            if vehicle_fixed_costs is not None:
-                self.fleet_data["vehicle_fixed_costs"] = cudf.Series(
-                    vehicle_fixed_costs, dtype=np.float32
-                )
-            if vehicle_time_windows:
-                self.fleet_data["vehicle_time_windows"] = cudf.DataFrame(
-                    vehicle_time_windows,
-                    columns=["earliest", "latest"],
-                    dtype=np.int32,
-                )
-            if vehicle_break_time_windows and vehicle_break_durations:
-                self.fleet_data["vehicle_break_time_windows"] = [
-                    cudf.DataFrame(
-                        val, columns=["earliest", "latest"], dtype=np.int32
-                    )
-                    for val in vehicle_break_time_windows
-                ]
-
-                self.fleet_data["vehicle_break_durations"] = [
-                    cudf.Series(val, dtype=np.int32)
-                    for val in vehicle_break_durations
-                ]
-            if vehicle_break_locations is not None:
-                self.fleet_data["vehicle_break_locations"] = cudf.Series(
-                    vehicle_break_locations, dtype=np.int32
-                )  # noqa
-            if vehicle_types is not None:
-                self.fleet_data["vehicle_types"] = cudf.Series(
-                    vehicle_types, dtype=np.uint8
-                )
-            if vehicle_order_match is not None:
-                self.fleet_data["vehicle_order_match"] = [
-                    {
-                        "vehicle_id": data.vehicle_id,
-                        "order_ids": data.order_ids,
-                    }
-                    for data in vehicle_order_match
-                ]
-            if skip_first_trips:
-                self.fleet_data["skip_first_trips"] = cudf.Series(
-                    skip_first_trips, dtype=bool
-                )
-            if drop_return_trips:
-                self.fleet_data["drop_return_trips"] = cudf.Series(
-                    drop_return_trips, dtype=bool
-                )
-            if min_vehicles is not None:
-                self.fleet_data["min_vehicles"] = min_vehicles
-
-        return is_valid
-
-    # TASK DATA
-    def set_task_data(
-        self,
-        task_ids,
-        task_locations,
-        demand,
-        pickup_and_delivery_pairs,
-        task_time_windows,
-        task_service_times,
-        prizes,
-        order_vehicle_match,
-        task_time_window_types,
-        task_time_window_penalties,
-    ):
-        if not self.is_route_detail_set:
-            return (
-                False,
-                "Cost matrix/Waypoint graph needs to be set before setting task data",  # noqa
-            )
-
-        task_ids = get_none_for_empty_list(task_ids)
-        task_locations = cudf.Series(
-            task_locations, name="task_id", dtype=np.int32
-        )
-
-        demand = get_none_for_empty_list(demand)
-        pickup_and_delivery_pairs = get_none_for_empty_list(
-            pickup_and_delivery_pairs
-        )
-        task_time_windows = get_none_for_empty_list(task_time_windows)
-        task_service_times = get_none_for_empty_list(task_service_times)
-        prizes = get_none_for_empty_list(prizes)
-        order_vehicle_match = get_none_for_empty_list(order_vehicle_match)
-
-        is_valid = validate_task_data(
-            task_ids,
-            task_locations,
-            demand,
-            pickup_and_delivery_pairs,
-            task_time_windows,
-            task_service_times,
-            prizes,
-            order_vehicle_match,
-            task_time_window_types,
-            task_time_window_penalties,
-            updating=False,
-            comparison_locations=None,
-        )
-
-        if is_valid[0]:
-            if task_ids is not None:
-                self.task_data["task_ids"] = cudf.Series(task_ids)
-            else:
-                self.task_data["task_ids"] = cudf.Series(
-                    range(len(task_locations))
-                )
-            self.task_data["task_locations"] = task_locations
-
-            if demand:
-                self.task_data["demand"] = cudf.DataFrame(
-                    demand, dtype=np.int32
-                ).T
-            if pickup_and_delivery_pairs:
-                self.task_data["pickup_and_delivery_pairs"] = cudf.DataFrame(
-                    pickup_and_delivery_pairs,
-                    columns=["pickup_ind", "delivery_ind"],
-                    dtype=np.int32,
-                )
-            if task_time_windows:
-                self.task_data["task_time_windows"] = cudf.DataFrame(
-                    task_time_windows,
-                    columns=["earliest", "latest"],
-                    dtype=np.int32,
-                )
-            if task_time_window_types:
-                self.task_data["task_time_window_types"] = task_time_window_types
-            if task_time_window_penalties:
-                self.task_data["task_time_window_penalties"] = task_time_window_penalties
-            if task_service_times:
-                self.task_data["service_times"] = task_service_times
-            if prizes is not None:
-                self.task_data["prizes"] = cudf.Series(
-                    prizes, dtype=np.float32
-                )
-            if order_vehicle_match is not None:
-                self.task_data["order_vehicle_match"] = [
-                    {
-                        "order_id": data.order_id,
-                        "vehicle_ids": data.vehicle_ids,
-                    }
-                    for data in order_vehicle_match
-                ]
-
-        return is_valid
-
-    def update_task_data(
-        self,
-        task_ids,
-        task_locations,
-        demand,
-        pickup_and_delivery_pairs,
-        task_time_windows,
-        task_service_times,
-        prizes,
-        order_vehicle_match,
-    ):
-        if not self.is_route_detail_set:
-            return (
-                False,
-                "Cost matrix/Waypoint graph needs to be set before updating task data",  # noqa
-            )
-
-        task_ids = get_none_for_empty_list(task_ids)
-        if task_locations is None or len(task_locations) == 0:
-            task_locations = self.task_data["task_locations"]
-        else:
-            task_locations = cudf.Series(
-                task_locations, name="task_id", dtype=np.int32
-            )
-
-        demand = get_none_for_empty_list(demand)
-        pickup_and_delivery_pairs = get_none_for_empty_list(
-            pickup_and_delivery_pairs
-        )
-        task_time_windows = get_none_for_empty_list(task_time_windows)
-        task_service_times = get_none_for_empty_list(task_service_times)
-        prizes = get_none_for_empty_list(prizes)
-        order_vehicle_match = get_none_for_empty_list(order_vehicle_match)
-
-        is_valid = validate_task_data(
-            task_ids,
-            task_locations,
-            demand,
-            pickup_and_delivery_pairs,
-            task_time_windows,
-            task_service_times,
-            prizes,
-            order_vehicle_match,
-            task_time_window_types=None,  # Not supported in update
-            task_time_window_penalties=None,  # Not supported in update
-            updating=True,
-            comparison_locations=self.task_data["task_locations"],
-        )
-
-        if is_valid[0]:
-            if task_ids is not None:
-                self.task_data["task_ids"] = cudf.Series(task_ids)
-            if task_locations is not None:
-                self.task_data["task_locations"] = task_locations
-            if demand:
-                self.task_data["demand"] = cudf.DataFrame(
-                    demand, dtype=np.int32
-                ).T
-            if pickup_and_delivery_pairs:
-                self.task_data["pickup_and_delivery_pairs"] = cudf.DataFrame(
-                    pickup_and_delivery_pairs,
-                    columns=["pickup_ind", "delivery_ind"],
-                    dtype=np.int32,
-                )
-            if task_time_windows:
-                self.task_data["task_time_windows"] = cudf.DataFrame(
-                    task_time_windows,
-                    columns=["earliest", "latest"],
-                    dtype=np.int32,
-                )
-            if task_service_times:
-                if type(task_service_times) is dict:
-                    self.task_data["service_times"] = {}
-                    for v_id, service_times in task_service_times:
-                        self.task_data["service_times"][v_id] = cudf.Series(
-                            task_service_times, dtype=np.int32
-                        )
-                else:
-                    self.task_data["service_times"] = cudf.Series(
-                        task_service_times, dtype=np.int32
-                    )
-            if prizes is not None:
-                self.task_data["prizes"] = cudf.Series(
-                    prizes, dtype=np.float32
-                )
-            if order_vehicle_match is not None:
-                self.task_data["order_vehicle_match"] = [
-                    {
-                        "order_id": data.order_id,
-                        "vehicle_ids": data.vehicle_ids,
-                    }
-                    for data in order_vehicle_match
-                ]
-
-        return is_valid
-
-    def set_initial_solution(self, initial_sols):
-        is_valid = [True, "valid"]  # Check for Validation
-        self.initial_solution = initial_sols
-        return is_valid
-
-    # SOLVER CONFIG DATA
-    def set_solver_config(
-        self,
-        time_limit,
-        objectives,
-        config_file,
-        verbose_mode,
-        error_logging,
-    ):
-        is_valid = validate_solver_config(
-            time_limit,
-            objectives,
-            config_file,
-            verbose_mode,
-            error_logging,
-            updating=False,
-            comparison_time_limit=None,
-        )
-
-        if is_valid[0]:
-            self.solver_config["time_limit"] = time_limit
-            if objectives is not None:
-                cuopt_objectives, objective_weights = get_objectives_as_lists(
-                    objectives
-                )  # noqa
-                if len(cuopt_objectives) > 0:
-                    self.solver_config["objectives"] = cudf.Series(
-                        cuopt_objectives, dtype=np.int32
-                    )  # noqa
-                    self.solver_config["objective_weights"] = cudf.Series(
-                        objective_weights, dtype=np.float32
-                    )  # noqa
-            if config_file is not None:
-                self.solver_config["config_file"] = config_file
-            if verbose_mode is not None:
-                self.solver_config["verbose_mode"] = verbose_mode
-            if error_logging is not None:
-                self.solver_config["error_logging"] = error_logging
-
-        return is_valid
-
-    def update_solver_config(
-        self,
-        time_limit,
-        objectives,
-        config_file,
-        verbose_mode,
-        error_logging,
-    ):
-        is_valid = validate_solver_config(
-            time_limit,
-            objectives,
-            config_file,
-            verbose_mode,
-            error_logging,
-            updating=True,
-            comparison_time_limit=self.solver_config["time_limit"],
-        )
-
-        if is_valid[0]:
-            if time_limit is not None:
-                self.solver_config["time_limit"] = time_limit
-            if objectives is not None:
-                cuopt_objectives, objective_weights = get_objectives_as_lists(
-                    objectives
-                )  # noqa
-                if len(cuopt_objectives) > 0:
-                    self.solver_config["objectives"] = cudf.Series(
-                        cuopt_objectives, dtype=np.int32
-                    )  # noqa
-                    self.solver_config["objective_weights"] = cudf.Series(
-                        objective_weights, dtype=np.float32
-                    )  # noqa
-            if config_file is not None:
-                self.solver_config["config_file"] = config_file
-            if verbose_mode is not None:
-                self.solver_config["verbose_mode"] = verbose_mode
-            if error_logging is not None:
-                self.solver_config["error_logging"] = error_logging
-
-        return is_valid
+        },
+        "reqId": "e8421e9e-e42e-4511-8da2-314253667dcf",
+    }  # noqa
+}
+
+managed_vrp_response = copy.deepcopy(vrp_response)
+del managed_vrp_response["value"]["reqId"]
+
+reqId_response = {"value": {"reqId": "e8421e9e-e42e-4511-8da2-314253667dcf"}}
+
+vrpschema = jsonref.loads(
+    json.dumps(OptimizedRoutingData.model_json_schema()), proxies=False
+)
+del vrpschema["$defs"]
