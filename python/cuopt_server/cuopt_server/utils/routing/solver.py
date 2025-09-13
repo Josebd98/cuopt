@@ -336,50 +336,21 @@ def create_data_model(
             pass
         return x
 
-    def _normalize_tw_types(types_in):
-        """
-        Acepta 'strict'/'soft', 0/1, numpy/cudf scalars y devuelve lista[int] 0/1.
-        """
-        types_in = _to_list(types_in)
-        norm = []
-        for t in (types_in or []):
-            # ints (incl. numpy enteros)
-            try:
-                if isinstance(t, (int,)) or (hasattr(t, "dtype") and "int" in str(getattr(t, "dtype", ""))):
-                    v = int(t)
-                    if v not in (0, 1):
-                        raise ValueError
-                    norm.append(v)
-                    continue
-            except Exception:
-                pass
-            # strings / otros
-            s = str(t).strip().lower()
-            if s in ("0", "strict"):
-                norm.append(0)
-            elif s in ("1", "soft"):
-                norm.append(1)
-            else:
-                raise InputValidationError(f"Invalid time window type: {t} (must be 0/1 or 'strict'/'soft')")
-        return norm
-
     if t_time_window_types is not None:
-        # Normalizar SIEMPRE a 0/1
-        numeric_types = _normalize_tw_types(t_time_window_types)
-
         # Penalties por defecto si no vienen
+        types_list = _to_list(t_time_window_types)
         pens_list = _to_list(t_time_window_penalties)
         if pens_list is None:
-            pens_list = [1.0 if v == 1 else 0.0 for v in numeric_types]
+            pens_list = [1.0 if v == 1 else 0.0 for v in types_list]
 
         # Validaciones de longitud
-        if len(numeric_types) != len(pens_list):
+        if len(types_list) != len(pens_list):
             raise InputValidationError(
-                f"Length mismatch: task_time_window_types({len(numeric_types)}) != task_time_window_penalties({len(pens_list)})"
+                f"Length mismatch: task_time_window_types({len(types_list)}) != task_time_window_penalties({len(pens_list)})"
             )
-        # Tipado explícito para el core
-        types_arr = np.asarray(numeric_types, dtype=np.int32)
-        pens_arr  = np.asarray(pens_list, dtype=np.float32)
+
+        types_arr = np.asarray(types_list, dtype=np.int32)
+        pens_arr = np.asarray(pens_list, dtype=np.float32)
 
         data_model.set_soft_time_windows(
             cudf.Series(types_arr),
