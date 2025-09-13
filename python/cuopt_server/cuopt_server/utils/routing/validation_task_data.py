@@ -122,12 +122,11 @@ def validate_task_data(
     # Check task time window types
     if task_time_window_types is not None:
         task_length_check_array.append(len(task_time_window_types))
-        # Valid types are "strict" (0) and "soft" (1) 
         for tw_type in task_time_window_types:
-            if tw_type not in ["strict", "soft", 0, 1]:
+            if tw_type not in (0, 1):
                 return (
                     False,
-                    "task_time_window_types must be either 'strict'/'soft' or 0/1",
+                    "task_time_window_types must contain only 0 or 1",
                 )
 
     # Check task time window penalties
