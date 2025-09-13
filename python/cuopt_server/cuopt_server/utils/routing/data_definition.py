@@ -595,15 +595,15 @@ class TaskData(StrictModel):
             "a order id and a list of vehicle ids that can serve this order."
         ),
     )
-    task_time_window_types: Optional[List[str]] = Field(
+    task_time_window_types: Optional[List[int]] = Field(
         default=None,
-        examples=[["strict", "soft", "strict", "soft"]],
+        examples=[[0, 1, 0, 1]],
         description=(
-            "dtype: str, type in ['strict', 'soft']."
+            "dtype: int32, value in [0, 1]."
             " \n\n "
-            "List of time window types for each task. 'strict' means the time window "
-            "must be respected (hard constraint), 'soft' means violations are allowed "
-            "but incur penalties. Must match the length of task_locations if provided."
+            "List of time window types for each task. 0 means the time window must be "
+            "respected (hard constraint), 1 allows violations with penalties. Must match "
+            "the length of task_locations if provided."
         ),
     )
     task_time_window_penalties: Optional[List[float]] = Field(
@@ -613,8 +613,8 @@ class TaskData(StrictModel):
             "dtype: float32, penalty >= 0."
             " \n\n "
             "List of penalty values for violating soft time windows. Only applies to "
-            "tasks with 'soft' time window type. For 'strict' time windows, this value "
-            "is ignored. Must match the length of task_locations if provided."
+            "tasks with time window type 1. For type 0, this value is ignored. Must match "
+            "the length of task_locations if provided."
         ),
     )
 
