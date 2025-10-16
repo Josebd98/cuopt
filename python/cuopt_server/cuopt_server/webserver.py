@@ -37,6 +37,7 @@ from fastapi import (
     Path,
     Query,
     Request,
+    status,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -114,6 +115,16 @@ def get_cuopt_version():
     return __version__[:5]
 
 
+# Security scheme for OpenAPI documentation
+security_scheme = {
+    "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Enter your JWT token in the format: Bearer <token>",
+    }
+}
+
 app = FastAPI(
     title="cuOpt Server",
     summary="OpenAPI Specification for cuOpt",
@@ -122,6 +133,42 @@ app = FastAPI(
     redoc_url="/cuopt/redoc",
     openapi_url="/cuopt.yaml",
 )
+
+# Add security scheme to OpenAPI
+app.openapi_schema = None  # Force regeneration
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        summary=app.summary,
+        routes=app.routes,
+    )
+    openapi_schema["components"]["securitySchemes"] = security_scheme
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+
+# Import security dependencies
+from cuopt_server.security import (
+    get_current_active_user,
+    authenticate_user,
+    create_access_token,
+    Token,
+    LoginRequest,
+    User,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+)
+from datetime import timedelta
+
+# Security dependency for protected endpoints
+security_dependency = [Depends(get_current_active_user)]
 
 
 # This is a blanket handler to turn any HTTPException into
@@ -183,6 +230,75 @@ def health():
             + msg
         )
         raise HTTPException(status_code=500, detail=f"{msg}")
+
+
+# Authentication endpoints
+@app.post(
+    "/auth/token",
+    response_model=Token,
+    summary="Login for access token",
+    description="Authenticate with username and password to receive a JWT access token. "
+    "Use this token in the Authorization header as 'Bearer <token>' for subsequent requests.",
+    tags=["authentication"],
+)
+async def login(login_request: LoginRequest):
+    """
+    Authenticate user and return JWT token.
+    
+    Parameters
+    ----------
+    login_request : LoginRequest
+        Login credentials (username and password)
+        
+    Returns
+    -------
+    Token
+        JWT access token and token type
+        
+    Raises
+    ------
+    HTTPException
+        If authentication fails
+    """
+    user = authenticate_user(login_request.username, login_request.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get(
+    "/auth/me",
+    response_model=User,
+    summary="Get current user",
+    description="Get the current authenticated user's information.",
+    dependencies=security_dependency,
+    tags=["authentication"],
+)
+async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    """
+    Get current authenticated user.
+    
+    Parameters
+    ----------
+    current_user : User
+        Current authenticated user from dependency
+        
+    Returns
+    -------
+    User
+        Current user information
+    """
+    return current_user
 
 
 # Get name for file that stores the result of Solve
@@ -324,6 +440,7 @@ def get_format(mime_type):
     summary="Query solver logs by id self-hosted",
     response_model=LogResponseModel,
     responses=LogResponse,
+    dependencies=security_dependency,
 )
 def getsolverlogs(
     id: str,
@@ -386,6 +503,7 @@ def getsolverlogs(
     summary="Get incumbent solutions for MIP (self-hosted)",
     response_model=List[IncumbentSolution],
     responses=IncumbentSolutionResponse,
+    dependencies=security_dependency,
 )
 def getincumbent(
     id: str,
@@ -431,6 +549,7 @@ def getincumbent(
     "Delete accumulated logs for a particular request.",
     summary="Delete solver logs by id (self-hosted)",
     responses=DeleteResponse,
+    dependencies=security_dependency,
 )
 def deletesolverlogs(
     id: str,
@@ -482,6 +601,7 @@ def deletesolverlogs(
     # This is for response examples and schema
     responses=IdResponse,
     summary="Upload a routing solution only(self-hosted)",
+    dependencies=security_dependency,
     openapi_extra={
         "requestBody": {
             "content": {
@@ -604,6 +724,7 @@ async def postsolution(
     "from a POST to /cuopt/request or /cuopt/solution.",
     summary="Delete a solution by id (self-hosted)",
     responses=DeleteResponse,
+    dependencies=security_dependency,
 )
 def deletesolution(
     id: str = Path(
@@ -644,6 +765,7 @@ def deletesolution(
     summary="Delete a request by id (self-hosted)",
     response_model=DeleteRequestModel,
     responses=ValidationErrorResponse,
+    dependencies=security_dependency,
 )
 def deleterequest(
     id: str = Path(
@@ -823,6 +945,7 @@ def getsolutionbody(id, accept, delete, warmstart=False):
         IdModel,
     ],
     responses=SolutionResponse,
+    dependencies=security_dependency,
 )
 def getsolution(
     id: str,
@@ -859,6 +982,7 @@ def getwarmstart(
     summary="Check the status of a request by id (self-hosted)",
     response_model=RequestStatusModel,
     responses=RequestResponse,
+    dependencies=security_dependency,
 )
 def getrequest(
     id: str,
@@ -888,6 +1012,7 @@ def getrequest(
     # This is for response examples and schema
     responses=IdResponse,
     summary="Solve a cuOpt problem (self-hosted)",
+    dependencies=security_dependency,
     # This form is necessary to allow multiple schemas for the
     # possible inputs, with multiple examples
     openapi_extra={
